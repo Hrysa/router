@@ -1,0 +1,40 @@
+# Rust build artifacts
+target/
+
+# Configuration
+config/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea/
+*.sw?
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Dependencies (if any vendored)
+/vendor/
+
+# Backup files
+*.bak
+*.tmp
+
+sing-box
