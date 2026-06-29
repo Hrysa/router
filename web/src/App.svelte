@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { isAuthenticated, notifications } from './lib/stores';
+  import { isAuthenticated, notifications, markAuthenticated } from './lib/stores';
   import Dashboard from './pages/Dashboard.svelte';
   import Firewall from './pages/Firewall.svelte';
   import Dhcp from './pages/Dhcp.svelte';
@@ -90,7 +90,7 @@
     </main>
   </div>
 {:else}
-  <Login />
+  <Login onLogin={markAuthenticated} />
 {/if}
 
 <style>

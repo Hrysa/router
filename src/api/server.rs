@@ -1,4 +1,5 @@
 use axum::{
+    middleware,
     response::IntoResponse,
     routing::{delete, get, post, put},
     Router,
@@ -8,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::api::handlers;
+use crate::api::middleware::auth::{require_auth, AuthState};
 use crate::config::ConfigStore;
 
 #[derive(Embed)]
@@ -18,15 +20,32 @@ struct WebAssets;
 pub struct AppState {
     pub config: Arc<ConfigStore>,
     pub config_path: PathBuf,
+    pub auth: AuthState,
 }
 
-pub async fn run(listen: &str, config_store: ConfigStore, config_path: PathBuf) -> anyhow::Result<()> {
+pub struct ServerConfig {
+    pub listen: String,
+    pub config_store: ConfigStore,
+    pub config_path: PathBuf,
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
+}
+
+pub async fn run(cfg: ServerConfig, jwt_secret: Arc<String>) -> anyhow::Result<()> {
     let state = AppState {
-        config: Arc::new(config_store),
-        config_path,
+        config: Arc::new(cfg.config_store),
+        config_path: cfg.config_path,
+        auth: AuthState { jwt_secret },
     };
 
-    let app = Router::new()
+    // Public routes: login and static SPA assets (login page must be reachable).
+    let public_routes = Router::new()
+        .route("/api/auth/login", post(handlers::auth::login))
+        .route("/api/auth/setup", post(handlers::auth::setup))
+        .route("/api/auth/status", get(handlers::auth::status));
+
+    // Protected API routes.
+    let protected = Router::new()
         // Health / status
         .route("/api/status", get(handlers::status::get_status))
         .route("/api/status/system", get(handlers::status::get_system_stats))
@@ -171,22 +190,46 @@ pub async fn run(listen: &str, config_store: ConfigStore, config_path: PathBuf) 
         .route(
             "/api/monitor/leases",
             get(handlers::monitor::get_leases),
-        )
-        .with_state(state);
+        );
 
-    // Serve SPA for non-API routes (catch-all)
-    let app = app.fallback(spa_handler);
+    let protected = protected
+        .layer(middleware::from_fn_with_state(state.auth.clone(), require_auth));
 
-    let listener = tokio::net::TcpListener::bind(listen).await?;
-    tracing::info!("API server listening on {}", listen);
+    let app = Router::new()
+        .merge(public_routes)
+        .merge(protected)
+        .with_state(state)
+        .fallback(spa_handler);
 
-    axum::serve(listener, app).await?;
+    match (cfg.tls_cert, cfg.tls_key) {
+        (Some(cert), Some(key)) => {
+            tracing::info!("API server listening on https://{}", cfg.listen);
+            let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
+            axum_server::bind_rustls(cfg.listen.parse()?, tls_config)
+                .serve(app.into_make_service())
+                .await?;
+        }
+        _ => {
+            tracing::warn!(
+                "API server listening on http://{} (no TLS — use --tls-cert/--tls-key or a reverse proxy)",
+                cfg.listen
+            );
+            let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
+            axum::serve(listener, app).await?;
+        }
+    }
+
     Ok(())
 }
 
 /// Serve embedded SPA files. Falls back to index.html for client-side routing.
 async fn spa_handler(uri: axum::http::Uri) -> impl axum::response::IntoResponse {
     let path = uri.path().trim_start_matches('/');
+
+    // API routes should not reach here, but guard just in case.
+    if path.starts_with("api/") {
+        return (axum::http::StatusCode::NOT_FOUND, "not found").into_response();
+    }
 
     // Try to serve the exact file
     if let Some(content) = serve_file(path) {

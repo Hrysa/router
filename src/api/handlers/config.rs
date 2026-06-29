@@ -546,7 +546,8 @@ pub async fn validate_config(Json(config): Json<Config>) -> Json<Value> {
 
 /// POST /api/config/apply — render and apply all service configs
 pub async fn apply_config(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let config = state.config.get().await;
+    let prev_config = state.config.get().await;
+    let config = prev_config.clone();
 
     let errors = crate::config::validator::validate(&config);
     if !errors.is_empty() {
@@ -556,7 +557,7 @@ pub async fn apply_config(State(state): State<AppState>) -> Result<Json<Value>, 
     let service_manager = crate::service::manager::ServiceManager::new();
     // Use diff-based change detection — config.set() writes config.yml but
     // detect_rendered_changes compares rendered service configs against /etc/ files.
-    let result = crate::service::apply::apply(&config, &state.config_path, &service_manager, false).await?;
+    let result = crate::service::apply::apply(&config, &prev_config, &state.config_path, &service_manager, false).await?;
 
     Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
 }

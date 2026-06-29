@@ -18,6 +18,9 @@ pub async fn rollback(
         anyhow::bail!("no backups available for rollback");
     }
 
+    // Get previous config before restoring
+    let prev_config = config_store.get().await;
+
     // Restore the most recent backup
     let latest = &backups[0];
     tracing::info!(backup_id = %latest.id, "rolling back to backup");
@@ -25,7 +28,7 @@ pub async fn rollback(
     let config = config_store.restore(&latest.id).await?;
 
     // Apply the restored config (force=true to apply all services)
-    let result = apply::apply(&config, config_path, service_manager, true).await?;
+    let result = apply::apply(&config, &prev_config, config_path, service_manager, true).await?;
 
     tracing::info!("rollback completed successfully");
     Ok(result)
@@ -40,8 +43,11 @@ pub async fn rollback_to(
 ) -> Result<apply::ApplyResult> {
     tracing::info!(backup_id = %backup_id, "rolling back to specific backup");
 
+    // Get previous config before restoring
+    let prev_config = config_store.get().await;
+
     let config = config_store.restore(backup_id).await?;
-    let result = apply::apply(&config, config_path, service_manager, true).await?;
+    let result = apply::apply(&config, &prev_config, config_path, service_manager, true).await?;
 
     tracing::info!("rollback to {} completed successfully", backup_id);
     Ok(result)

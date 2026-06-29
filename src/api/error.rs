@@ -18,6 +18,9 @@ pub enum ApiError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    #[error("unauthorized")]
+    Unauthorized,
+
     #[error("internal error: {0}")]
     Internal(#[from] anyhow::Error),
 }
@@ -53,6 +56,12 @@ impl IntoResponse for ApiError {
                 StatusCode::CONFLICT,
                 "CONFLICT",
                 msg.clone(),
+                Value::Null,
+            ),
+            ApiError::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
+                "unauthorized".into(),
                 Value::Null,
             ),
             ApiError::Internal(err) => {

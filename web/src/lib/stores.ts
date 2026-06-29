@@ -1,11 +1,20 @@
 import { writable } from 'svelte/store';
-import { getConfig, getStatus, listServices } from './api';
+import { getConfig, getStatus, listServices, getToken, clearToken } from './api';
 
 // ── Auth store ───────────────────────────────────────────────────────────────
-// Auth disabled — always authenticated
 
-export const isAuthenticated = writable(true);
+export const isAuthenticated = writable(!!getToken());
 export const username = writable('admin');
+
+export function logout() {
+  clearToken();
+  isAuthenticated.set(false);
+  window.location.hash = '/';
+}
+
+export function markAuthenticated() {
+  isAuthenticated.set(true);
+}
 
 // ── Config store ─────────────────────────────────────────────────────────────
 

@@ -277,6 +277,7 @@ trait CommandExt {
 
 impl CommandExt for Command {
     async fn timeout_run(&mut self, duration: Duration) -> Result<std::process::Output> {
+        self.kill_on_drop(true);
         tokio::select! {
             output = self.output() => Ok(output?),
             _ = tokio::time::sleep(duration) => {

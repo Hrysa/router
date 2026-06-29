@@ -4,28 +4,7 @@ A Linux-based router system built with Rust, nftables, and Debian. API-centric a
 
 ## Architecture
 
-```
-┌─────────────┐       ┌──────────────────────────────────────┐
-│   SPA WebUI  │──────→│           API Server (routerd)       │
-└─────────────┘  REST  │                                      │
-                        │  ┌─────────┐  ┌──────────────────┐ │
-┌─────────────┐        │  │ Config   │  │  Config Renderer  │ │
-│   CLI tool   │──────→│  │ Store    │  │  (systemd + nft)  │ │
-│  (optional)  │  REST  │  │ (YAML)  │  │                   │ │
-└─────────────┘        │  └────┬────┘  └────────┬─────────┘ │
-                        │       │                │            │
-                        │       ▼                ▼            │
-                        │  ┌─────────────────────────────┐   │
-                        │  │   Service Manager (apply)    │   │
-                        │  │  write configs + restart svc │   │
-                        │  └─────────────────────────────┘   │
-                        └──────────────────────────────────────┘
-                                          │
-                    ┌─────────┬───────────┼───────────┬──────────┐
-                    ▼         ▼           ▼           ▼          ▼
-               nftables    dhcpd      unbound   systemd-     wireguard
-                                              networkd
-```
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system overview and component documentation.
 
 ## Features
 
@@ -80,8 +59,13 @@ When `config.yml` doesn't exist in the config directory, routerd will:
 ### Configure via API
 
 ```bash
+# Login (returns JWT token)
+curl -k -X POST https://localhost:8443/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"password": "admin123"}'
+
 # Get current config
-curl -k https://localhost:8443/api/config
+curl -k -H "Authorization: Bearer <token>" https://localhost:8443/api/config
 
 # Update PPPoE credentials
 curl -k -X POST https://localhost:8443/api/config/interfaces \
@@ -111,10 +95,10 @@ curl -k -X POST https://localhost:8443/api/config/interfaces \
   }'
 
 # Apply config (renders all service configs + restarts services)
-curl -k -X POST https://localhost:8443/api/config/apply
+curl -k -X POST -H "Authorization: Bearer <token>" https://localhost:8443/api/config/apply
 
 # Check service status
-curl -k https://localhost:8443/api/services
+curl -k -H "Authorization: Bearer <token>" https://localhost:8443/api/services
 ```
 
 ## CLI Options
@@ -127,6 +111,9 @@ Options:
       --listen <ADDR>      API server listen address [default: 0.0.0.0:8443]
       --log-level <LEVEL>  Log level: trace, debug, info, warn, error [default: info]
       --log-format <FMT>   Log format: text, json [default: text]
+      --init               Allow first-boot initialization when config.yml is missing
+      --tls-cert <PATH>    TLS certificate (PEM)
+      --tls-key <PATH>     TLS private key (PEM)
   -h, --help               Print help
 ```
 

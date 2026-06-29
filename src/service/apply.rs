@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::config::diff::ChangeSet;
@@ -26,7 +27,7 @@ pub struct ApplyResult {
 ///
 /// `config_path` is the path to config.yml on disk (used for change detection).
 /// `force` applies all services regardless of changes (used on startup).
-pub async fn apply(config: &Config, _config_path: &Path, service_manager: &ServiceManager, force: bool) -> Result<ApplyResult> {
+pub async fn apply(config: &Config, prev_config: &Config, _config_path: &Path, service_manager: &ServiceManager, force: bool) -> Result<ApplyResult> {
     // Render all service configs
     let rendered = render_all(config)?;
 
@@ -55,7 +56,7 @@ pub async fn apply(config: &Config, _config_path: &Path, service_manager: &Servi
 
     // Always set up tproxy routing (ip rule + ip route) — these are ephemeral
     // and need to be re-applied on every boot/config change.
-    if let Err(e) = apply_tproxy_routing(config).await {
+    if let Err(e) = apply_tproxy_routing(prev_config, config).await {
         tracing::warn!(error = %e, "tproxy routing setup failed");
     }
 
@@ -218,7 +219,7 @@ async fn write_changed_configs(rendered: &RenderedConfigs, changeset: &ChangeSet
         {
             tracing::debug!("writing /etc/wireguard/wg0.conf");
             std::fs::create_dir_all("/etc/wireguard")?;
-            atomic_write("/etc/wireguard/wg0.conf", &rendered.wireguard)?;
+            atomic_write_with_mode("/etc/wireguard/wg0.conf", &rendered.wireguard, Some(0o600))?;
         }
     }
 
@@ -257,8 +258,17 @@ fn write_network_files(files: &[NetworkFile]) -> Result<()> {
 
 /// Atomic file write (write to .tmp, then rename).
 fn atomic_write(path: &str, content: &str) -> Result<()> {
+    atomic_write_with_mode(path, content, None)
+}
+
+/// Atomic file write with explicit Unix permissions.
+fn atomic_write_with_mode(path: &str, content: &str, mode: Option<u32>) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let tmp_path = format!("{}.tmp", path);
     std::fs::write(&tmp_path, content)?;
+    if let Some(mode) = mode {
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(mode))?;
+    }
     std::fs::rename(&tmp_path, path)?;
     Ok(())
 }
@@ -286,17 +296,9 @@ async fn apply_sysctl() -> Result<()> {
     Ok(())
 }
 
-/// Set up ip rule + ip route for TPROXY.
-///
-/// For each unique fwmark in tproxy rules:
-///   ip rule add fwmark <N> lookup <N>
-///   ip route add local 0.0.0.0/0 dev lo table <N>
-///
-/// Old rules/routes are cleaned up first to handle config changes.
-async fn apply_tproxy_routing(config: &Config) -> Result<()> {
-    use std::collections::HashSet;
-
-    let marks: HashSet<u32> = config
+/// Extract unique tproxy marks from a config.
+fn extract_tproxy_marks(config: &Config) -> HashSet<u32> {
+    config
         .firewall
         .rules
         .input
@@ -304,11 +306,25 @@ async fn apply_tproxy_routing(config: &Config) -> Result<()> {
         .chain(config.firewall.rules.forward.iter())
         .filter(|r| r.enabled && r.action == crate::config::schema::Action::Tproxy)
         .filter_map(|r| r.mark)
-        .collect();
+        .collect()
+}
 
-    // Clean up all existing tproxy routing (flush table + delete rule for each possible mark)
-    // We clean broadly to handle marks that were removed from config.
-    for mark in &marks {
+/// Set up ip rule + ip route for TPROXY.
+///
+/// For each unique fwmark in tproxy rules:
+///   ip rule add fwmark <N> lookup <N>
+///   ip route add local 0.0.0.0/0 dev lo table <N>
+///
+/// Old rules/routes are cleaned up first to handle config changes,
+/// including marks that were removed from the config.
+async fn apply_tproxy_routing(prev_config: &Config, config: &Config) -> Result<()> {
+    let prev_marks = extract_tproxy_marks(prev_config);
+    let curr_marks = extract_tproxy_marks(config);
+    let removed_marks: HashSet<u32> = prev_marks.difference(&curr_marks).copied().collect();
+
+    // Clean up all tproxy routing for marks that need removal (current + removed)
+    let marks_to_clean: HashSet<u32> = curr_marks.union(&removed_marks).copied().collect();
+    for mark in &marks_to_clean {
         let _ = tokio::process::Command::new("ip")
             .args(["route", "flush", "table", &mark.to_string()])
             .output()
@@ -319,8 +335,8 @@ async fn apply_tproxy_routing(config: &Config) -> Result<()> {
             .await;
     }
 
-    // Set up routing for each mark
-    for mark in &marks {
+    // Set up routing for each current mark
+    for mark in &curr_marks {
         // ip rule add fwmark <N> lookup <N>
         let output = tokio::process::Command::new("ip")
             .args(["rule", "add", "fwmark", &mark.to_string(), "lookup", &mark.to_string()])
@@ -347,8 +363,11 @@ async fn apply_tproxy_routing(config: &Config) -> Result<()> {
         }
     }
 
-    if !marks.is_empty() {
-        tracing::info!(?marks, "tproxy routing configured");
+    if !removed_marks.is_empty() {
+        tracing::info!(?removed_marks, "cleaned up removed tproxy marks");
+    }
+    if !curr_marks.is_empty() {
+        tracing::info!(?curr_marks, "tproxy routing configured");
     }
 
     Ok(())

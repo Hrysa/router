@@ -1,11 +1,52 @@
 import axios from 'axios';
 
+const TOKEN_KEY = 'routerd_token';
+
 const api = axios.create({
   baseURL: '/api',
   headers: {
     'Content-Type': 'application/json',
   },
 });
+
+// Attach JWT to every request if available.
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string) {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+export async function getAuthStatus() {
+  const { data } = await api.get('/auth/status');
+  return data;
+}
+
+export async function login(password: string) {
+  const { data } = await api.post('/auth/login', { password });
+  setToken(data.token);
+  return data;
+}
+
+export async function setupPassword(password: string) {
+  const { data } = await api.post('/auth/setup', { password });
+  return data;
+}
 
 // ── Status ───────────────────────────────────────────────────────────────────
 

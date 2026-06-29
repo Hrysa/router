@@ -27,6 +27,19 @@ struct Args {
     /// Log format (text, json)
     #[arg(long, default_value = "text")]
     log_format: String,
+
+    /// Allow first-boot initialization when config.yml is missing.
+    /// Without this flag, routerd exits if config.yml does not exist.
+    #[arg(long)]
+    init: bool,
+
+    /// Path to TLS certificate (PEM). If set, --tls-key must also be set.
+    #[arg(long, value_name = "PATH")]
+    tls_cert: Option<String>,
+
+    /// Path to TLS private key (PEM). If set, --tls-cert must also be set.
+    #[arg(long, value_name = "PATH")]
+    tls_key: Option<String>,
 }
 
 #[tokio::main]
@@ -63,10 +76,18 @@ async fn main() -> anyhow::Result<()> {
     let config_dir = Path::new(&args.config_dir);
     let config_path = config_dir.join("config.yml");
 
-    // If config.yml doesn't exist, run init setup (auto-detect interfaces)
+    // If config.yml doesn't exist, run init setup (auto-detect interfaces).
+    // This is only allowed when --init is passed to prevent accidental reconfiguration.
     if !config_path.exists() {
-        tracing::info!("config.yml not found, running init setup");
-        config::init::run(config_dir)?;
+        if args.init {
+            tracing::info!("config.yml not found, running init setup");
+            config::init::run(config_dir)?;
+        } else {
+            anyhow::bail!(
+                "config.yml not found at {}. Run with --init to perform first-boot setup.",
+                config_path.display()
+            );
+        }
     }
 
     // Load config
@@ -88,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
     // On first boot (no config on disk), all services are started.
     // On subsequent boots, only changed services are restarted.
     let service_manager = service::manager::ServiceManager::new();
-    let apply_result = service::apply::apply(&config, &config_path, &service_manager, false).await?;
+    let apply_result = service::apply::apply(&config, &config, &config_path, &service_manager, false).await?;
     tracing::info!(
         services = ?apply_result.services_restarted,
         "config applied"
@@ -97,8 +118,18 @@ async fn main() -> anyhow::Result<()> {
     // Run after_start hooks
     service::hooks::run_hooks("after_start", &config.hooks.after_start).await?;
 
+    // Ensure a JWT secret exists for API authentication.
+    let jwt_secret = api::handlers::auth::ensure_jwt_secret(&config_store).await?;
+
     // Start API server
-    api::server::run(&args.listen, config_store, config_path).await?;
+    let server_config = api::server::ServerConfig {
+        listen: args.listen,
+        config_store,
+        config_path,
+        tls_cert: args.tls_cert.map(std::path::PathBuf::from),
+        tls_key: args.tls_key.map(std::path::PathBuf::from),
+    };
+    api::server::run(server_config, jwt_secret).await?;
 
     Ok(())
 }

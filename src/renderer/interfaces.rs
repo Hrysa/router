@@ -185,15 +185,14 @@ fn render_lan(iface: &InterfaceConfig, files: &mut Vec<NetworkFile>) {
             content: network_content,
         });
 
-        // Bridge slave ports
+        // Bridge slave ports — one Name= per port
+        let mut match_section = "# Managed by routerd\n[Match]\n".to_string();
+        for port in &iface.bridge_ports {
+            match_section.push_str(&format!("Name={}\n", port));
+        }
         let slave_content = format!(
-            "# Managed by routerd\n\
-             [Match]\n\
-             Name={}\n\n\
-             [Network]\n\
-             Bridge={}\n",
-            iface.bridge_ports.join(" "),
-            iface.name,
+            "{}\n[Network]\nBridge={}\n",
+            match_section, iface.name,
         );
         files.push(NetworkFile {
             filename: format!("{}-{}-slave.network", PREFIX, iface.name),

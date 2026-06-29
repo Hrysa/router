@@ -5,42 +5,68 @@
 routerd is a Linux router daemon that manages network services through a unified YAML configuration. It uses **systemd-networkd** for interface management and generates all service configs from a single `config.yml`.
 
 ```
-┌─────────────┐       ┌──────────────────────────────────────┐
-│   SPA WebUI  │──────→│           API Server (routerd)       │
-└─────────────┘  REST  │                                      │
-                        │  ┌─────────┐  ┌──────────────────┐ │
-┌─────────────┐        │  │ Config   │  │  Config Renderer  │ │
-│   CLI tool   │──────→│  │ Store    │  │                   │ │
-│  (optional)  │  REST  │  │ (YAML)  │  │                   │ │
-└─────────────┘        │  └────┬────┘  └────────┬─────────┘ │
-                        │       │                │            │
-                        │       ▼                ▼            │
-                        │  ┌─────────────────────────────┐   │
-                        │  │   Service Manager (apply)    │   │
-                        │  │  write configs + restart svc │   │
-                        │  └─────────────────────────────┘   │
-                        └──────────────────────────────────────┘
+┌─────────────┐        ┌────────────────────────────────────────┐
+│  SPA WebUI  │───────→│          API Server (routerd)          │
+└─────────────┘  REST  │                                        │
+                       │  ┌──────────┐  ┌───────────────────┐  │
+┌─────────────┐        │  │ Config   │  │  Config Renderer   │  │
+│  CLI tool   │───────→│  │ Store    │  │                    │  │
+│ (optional)  │  REST  │  │ (YAML)  │  │                    │  │
+└─────────────┘        │  └────┬─────┘  └────────┬──────────┘  │
+                       │       │                 │              │
+                       │       ▼                 ▼              │
+                       │  ┌────────────────────────────────┐   │
+                       │  │   Service Manager (apply)      │   │
+                       │  │  write configs + restart svc   │   │
+                       │  └────────────────────────────────┘   │
+                       └────────────────────────────────────────┘
                                           │
-                    ┌─────────┬───────────┼───────────┬──────────┐
-                    ▼         ▼           ▼           ▼          ▼
-               nftables    kea-dhcp4  unbound   systemd-     wireguard
-                                              networkd
+                     ┌─────────┬───────────┼───────────┬──────────┐
+                     ▼         ▼           ▼           ▼          ▼
+                nftables    kea-dhcp4  unbound   systemd-     wireguard
+                                               networkd
 ```
 
-## Components
+## Architecture Layers
 
-### Core (always required)
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 3: Presentation                                      │
+│  SPA WebUI, CLI, REST API, Monitoring                       │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 2: Business Logic                                    │
+│  Config Management, Renderers, Service Manager, Auth        │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 1: Infrastructure                                    │
+│  config.yml, systemd services, nftables, kea, unbound       │
+└─────────────────────────────────────────────────────────────┘
+```
 
-These components have no `enabled` field — they are always active.
+**Dependency flow:** Layer 3 → Layer 2 → Layer 1
+
+---
+
+## Layer 1: Infrastructure
+
+External systems and data sources that routerd manages.
+
+### Config Source
+
+| File | Purpose |
+|------|---------|
+| `config.yml` | Single source of truth for all router settings |
+| `config/backups/` | Timestamped config backups |
+
+### Managed Services
+
+#### Core (always active)
 
 | Component | systemd unit | Config file | Validation |
 |-----------|--------------|-------------|------------|
 | Firewall | `nftables` | `/etc/nftables.conf` | `nft -c` |
 | Network | `systemd-networkd` | `/etc/systemd/network/50-routerd-*.network` | — |
 
-### Optional (configurable via `enabled` field)
-
-These components are only validated and applied when `enabled: true`.
+#### Optional (via `enabled` field)
 
 | Component | systemd unit | Config file | `enabled` field |
 |-----------|--------------|-------------|-----------------|
@@ -51,20 +77,99 @@ These components are only validated and applied when `enabled: true`.
 | Traffic | `vnstat` | — | `monitoring.vnstat` |
 | NTP | `chrony` | — | `system.ntp.enabled` |
 
-PPPoE is implicitly enabled when `interfaces.wan.method: "pppoe"`.
+### systemd-networkd Config Files
 
-## Config Flow
+All managed files use `50-routerd-` prefix for cleanup:
 
-```
-config.yml (single source of truth)
-    │
-    ├── renderer::interfaces  → /etc/systemd/network/50-routerd-*.network
-    ├── renderer::nftables    → /etc/nftables.conf
-    ├── renderer::kea         → /etc/kea/kea-dhcp4.conf     (if dhcp.enabled)
-    ├── renderer::unbound     → /etc/unbound/unbound.conf.d/router.conf  (if dns.enabled)
-    ├── renderer::ppp         → /etc/ppp/peers/isp          (if method=pppoe)
-    └── renderer::wireguard   → /etc/wireguard/wg0.conf     (if vpn.wireguard.enabled)
-```
+| File | Purpose |
+|------|---------|
+| `50-routerd-wan.network` | WAN interface (DHCP/static/PPPoE unmanaged) |
+| `50-routerd-ppp0.network` | PPPoE tunnel routing (if applicable) |
+| `50-routerd-br-lan.netdev` | Bridge device definition |
+| `50-routerd-br-lan.network` | Bridge static IP |
+| `50-routerd-br-lan-slave.network` | Bridge member ports |
+| `50-routerd-vlan<id>.netdev` | VLAN device definition |
+| `50-routerd-vlan<id>.network` | VLAN static IP |
+
+---
+
+## Layer 2: Business Logic
+
+Core modules that transform config into service configurations and manage their lifecycle.
+
+### Config Management (`src/config/`)
+
+| Module | Purpose |
+|--------|---------|
+| `schema.rs` | Serde structs for `config.yml` (852 lines) |
+| `store.rs` | Atomic read/write with backup |
+| `validator.rs` | Validation logic for config values |
+| `diff.rs` | Change detection between old/new config |
+| `init.rs` | First-run auto-detect setup |
+
+### Renderers (`src/renderer/`)
+
+Transform abstract config into concrete service files:
+
+| Module | Output |
+|--------|--------|
+| `nftables.rs` | `/etc/nftables.conf` (758 lines) |
+| `interfaces.rs` | `50-routerd-*.network`/`.netdev` files |
+| `kea.rs` | `/etc/kea/kea-dhcp4.conf` |
+| `unbound.rs` | `/etc/unbound/unbound.conf.d/router.conf` |
+| `ppp.rs` | `/etc/ppp/peers/isp` |
+| `wireguard.rs` | `/etc/wireguard/wg0.conf` |
+| `sysctl.rs` | Sysctl settings |
+
+### Service Management (`src/service/`)
+
+| Module | Purpose |
+|--------|---------|
+| `apply.rs` | Render → validate → write → restart pipeline (505 lines) |
+| `manager.rs` | Systemd lifecycle (start/stop/restart) |
+| `hooks.rs` | User-defined lifecycle hooks |
+| `rollback.rs` | Config rollback on failure |
+
+### Auth (`src/auth/`)
+
+| Module | Purpose |
+|--------|---------|
+| `jwt.rs` | JWT token generation/validation |
+| `password.rs` | Password hashing (bcrypt) |
+
+---
+
+## Layer 3: Presentation
+
+User-facing interfaces and monitoring.
+
+### API Server (`src/api/`)
+
+| Module | Purpose |
+|--------|---------|
+| `server.rs` | Axum HTTP/HTTPS server + SPA serving |
+| `handlers/config.rs` | Read/update router configuration |
+| `handlers/service.rs` | Trigger service restarts |
+| `handlers/status.rs` | System status |
+| `handlers/monitor.rs` | Live monitoring data |
+| `middleware/auth.rs` | JWT validation middleware |
+| `error.rs` | API error types |
+
+### Monitoring (`src/monitor/`)
+
+| Module | Purpose |
+|--------|---------|
+| `interfaces.rs` | Live interface state |
+| `traffic.rs` | Bandwidth statistics |
+| `leases.rs` | DHCP lease info |
+| `connections.rs` | Active connections |
+| `system.rs` | CPU, memory, uptime |
+
+### CLI (`src/main.rs`)
+
+Entry point with clap argument parsing. Orchestrates startup: parse args → init → load config → apply → start API server.
+
+---
 
 ## Apply Pipeline
 
@@ -102,20 +207,6 @@ routerd -c /etc/router
         - nftables: empty accept-all ruleset (init mode)
         - other components: skip if not installed
 ```
-
-## systemd-networkd Config Files
-
-All managed files use `50-routerd-` prefix for easy cleanup:
-
-| File | Purpose |
-|------|---------|
-| `50-routerd-wan.network` | WAN interface (DHCP/static/PPPoE unmanaged) |
-| `50-routerd-ppp0.network` | PPPoE tunnel routing (if applicable) |
-| `50-routerd-br-lan.netdev` | Bridge device definition |
-| `50-routerd-br-lan.network` | Bridge static IP |
-| `50-routerd-br-lan-slave.network` | Bridge member ports |
-| `50-routerd-vlan<id>.netdev` | VLAN device definition |
-| `50-routerd-vlan<id>.network` | VLAN static IP |
 
 ## Project Structure
 

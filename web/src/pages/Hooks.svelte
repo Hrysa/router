@@ -56,14 +56,14 @@
       <textarea
         bind:value={beforeStart}
         rows="6"
-        placeholder='echo "starting routerd"'
+        placeholder='echo "applying routerd config"'
         spellcheck="false"
       ></textarea>
     </section>
 
     <section>
       <h3>After Start</h3>
-      <p class="section-desc">Runs after services are applied, before the API server starts.</p>
+      <p class="section-desc">Runs after services are applied and tproxy routing is configured.</p>
       <textarea
         bind:value={afterStart}
         rows="6"
