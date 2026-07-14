@@ -532,6 +532,59 @@ pub async fn patch_hooks(
     Ok(Json(json!({"status": "ok"})))
 }
 
+// ── sing-box ───────────────────────────────────────────────────────────────
+
+/// GET /api/singbox/config — read the sing-box JSONC config file
+pub async fn get_singbox_config() -> Result<Json<Value>, ApiError> {
+    let path = "/etc/sing-box/config.jsonc";
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(Json(json!({"raw": content}))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(Json(json!({"raw": ""})))
+        }
+        Err(e) => Err(anyhow::anyhow!("failed to read sing-box config: {}", e).into()),
+    }
+}
+
+/// PUT /api/singbox/config — write the sing-box JSONC config file
+pub async fn put_singbox_config(
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let path = "/etc/sing-box/config.jsonc";
+    let content = String::from_utf8(body.to_vec())
+        .map_err(|e| anyhow::anyhow!("invalid UTF-8: {}", e))?;
+
+    // Validate with sing-box check if binary exists
+    if let Ok(singbox) = crate::service::manager::find_command("sing-box") {
+        let tmp_path = "/tmp/sing-box-config-staged.jsonc";
+        std::fs::write(tmp_path, &content)
+            .map_err(|e| anyhow::anyhow!("failed to write staged config: {}", e))?;
+
+        let output = tokio::process::Command::new(&singbox)
+            .args(["check", "-c", tmp_path])
+            .output()
+            .await;
+
+        let _ = std::fs::remove_file(tmp_path);
+
+        match output {
+            Ok(o) if !o.status.success() => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                return Err(ApiError::BadRequest(format!("sing-box config validation failed: {}", stderr.trim())));
+            }
+            Err(_) => {} // binary not found, skip check
+            _ => {}
+        }
+    }
+
+    std::fs::create_dir_all("/etc/sing-box")
+        .map_err(|e| anyhow::anyhow!("failed to create dir: {}", e))?;
+    std::fs::write(path, &content)
+        .map_err(|e| anyhow::anyhow!("failed to write config: {}", e))?;
+
+    Ok(Json(json!({"status": "ok"})))
+}
+
 // ── Other Config ─────────────────────────────────────────────────────────────
 
 /// POST /api/config/validate — validate config without saving

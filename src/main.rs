@@ -40,6 +40,10 @@ struct Args {
     /// Path to TLS private key (PEM). If set, --tls-cert must also be set.
     #[arg(long, value_name = "PATH")]
     tls_key: Option<String>,
+
+    /// Download and install sing-box from GitHub releases, then exit.
+    #[arg(long)]
+    install_singbox: bool,
 }
 
 #[tokio::main]
@@ -71,6 +75,14 @@ async fn main() -> anyhow::Result<()> {
         listen = %args.listen,
         "routerd starting"
     );
+
+    // Handle --install-singbox: download, install, and exit
+    if args.install_singbox {
+        tracing::info!("installing sing-box");
+        service::singbox::install().await?;
+        tracing::info!("sing-box installation complete");
+        return Ok(());
+    }
     tracing::info!("config directory: {}", std::fs::canonicalize(&args.config_dir).map(|p| p.display().to_string()).unwrap_or_else(|_| args.config_dir.clone()));
 
     let config_dir = Path::new(&args.config_dir);

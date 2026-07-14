@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { isAuthenticated } from './stores';
 
 const TOKEN_KEY = 'routerd_token';
 
@@ -17,6 +18,19 @@ api.interceptors.request.use((config) => {
   }
   return config;
 });
+
+// Redirect to login on 401.
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err.response?.status === 401) {
+      localStorage.removeItem(TOKEN_KEY);
+      isAuthenticated.set(false);
+      window.location.hash = '/';
+    }
+    return Promise.reject(err);
+  },
+);
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -269,6 +283,20 @@ export async function addDhcpLease(lease: any) {
 
 export async function deleteDhcpLease(mac: string) {
   const { data } = await api.delete(`/config/dhcp/leases/${encodeURIComponent(mac)}`);
+  return data;
+}
+
+// ── sing-box ───────────────────────────────────────────────────────────────
+
+export async function getSingboxConfig() {
+  const { data } = await api.get('/singbox/config');
+  return data;
+}
+
+export async function putSingboxConfig(config: string) {
+  const { data } = await api.put('/singbox/config', config, {
+    headers: { 'Content-Type': 'text/plain' },
+  });
   return data;
 }
 

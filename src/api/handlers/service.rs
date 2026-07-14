@@ -71,6 +71,7 @@ fn parse_service(name: &str) -> Result<Service, ApiError> {
         "pppd" | "ppp" | "pppoe" => Ok(Service::Pppd),
         "networking" | "network" | "systemd-networkd" => Ok(Service::Networking),
         "wireguard" | "wg" | "wg0" => Ok(Service::Wireguard),
+        "sing-box" | "singbox" => Ok(Service::SingBox),
         "vnstat" => Ok(Service::Vnstat),
         _ => Err(ApiError::NotFound(format!("unknown service: {}", name))),
     }

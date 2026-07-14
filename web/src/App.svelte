@@ -7,6 +7,7 @@
   import Services from './pages/Services.svelte';
   import Monitoring from './pages/Monitoring.svelte';
   import Hooks from './pages/Hooks.svelte';
+  import SingBox from './pages/SingBox.svelte';
   import Login from './pages/Login.svelte';
 
   let sidebarOpen = $state(true);
@@ -29,6 +30,7 @@
     { path: '/firewall', label: 'Firewall', icon: '🛡️' },
     { path: '/dhcp', label: 'DHCP', icon: '📡' },
     { path: '/interfaces', label: 'Interfaces', icon: '🌐' },
+    { path: '/singbox', label: 'sing-box', icon: '🚀' },
     { path: '/services', label: 'Services', icon: '🔧' },
     { path: '/monitoring', label: 'Monitoring', icon: '📈' },
     { path: '/hooks', label: 'Hooks', icon: '⚡' },
@@ -78,6 +80,8 @@
         <Dhcp />
       {:else if currentPath === '/interfaces'}
         <Interfaces />
+      {:else if currentPath === '/singbox'}
+        <SingBox />
       {:else if currentPath === '/services'}
         <Services />
       {:else if currentPath === '/monitoring'}

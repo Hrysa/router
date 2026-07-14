@@ -381,19 +381,20 @@ async fn restart_services(
 ) -> Result<Vec<String>> {
     let mut restarted = Vec::new();
 
-    // nftables uses nft -f, not systemctl
+    // nftables: apply rules directly via nft -f if config changed
     if changeset.nftables {
         tracing::info!("nftables config changed, applying rules");
         let nft_path = "/etc/nftables.conf";
         service_manager.apply_nftables(nft_path).await?;
         restarted.push("nftables".into());
-    } else {
-        tracing::info!("nftables config unchanged, skipping");
     }
 
-    // Systemd services: check status, start if not running, restart if changed
+    // All systemd-managed services: start if not running, restart if config changed
     let systemd_services: Vec<(bool, Service)> = vec![
+        (changeset.nftables, Service::Nftables),
         (changeset.dhcpd, Service::Dhcpd),
+        (changeset.interfaces, Service::Networking),
+        (changeset.wireguard, Service::Wireguard),
     ];
 
     for (changed, service) in systemd_services {
@@ -408,11 +409,26 @@ async fn restart_services(
                 restarted.push(service.systemd_name().into());
             }
         } else if changed {
-            tracing::info!(service = service.display_name(), "config changed, restarting");
-            if let Err(e) = service_manager.restart(service).await {
-                tracing::error!(service = service.display_name(), error = %e, "restart failed");
+            if service == Service::Networking {
+                // systemd-networkd: use networkctl reload for lighter reconfiguration
+                tracing::info!(service = service.display_name(), "config changed, reloading");
+                if let Err(e) = service_manager.networkctl_reload().await {
+                    tracing::debug!(error = %e, "networkctl reload failed, falling back to restart");
+                    if let Err(e) = service_manager.restart(service).await {
+                        tracing::warn!(error = %e, "systemd-networkd restart failed");
+                    } else {
+                        restarted.push(service.systemd_name().into());
+                    }
+                } else {
+                    restarted.push("systemd-networkd (reload)".into());
+                }
             } else {
-                restarted.push(service.systemd_name().into());
+                tracing::info!(service = service.display_name(), "config changed, restarting");
+                if let Err(e) = service_manager.restart(service).await {
+                    tracing::error!(service = service.display_name(), error = %e, "restart failed");
+                } else {
+                    restarted.push(service.systemd_name().into());
+                }
             }
         } else {
             tracing::info!(service = service.display_name(), "config unchanged and running, skipping");
@@ -437,32 +453,23 @@ async fn restart_services(
         tracing::info!("ppp config unchanged, skipping");
     }
 
-    // systemd-networkd: use networkctl reload for lighter reconfiguration
-    if changeset.interfaces {
-        tracing::info!("interfaces config changed, reloading");
-        if let Err(e) = service_manager.networkctl_reload().await {
-            tracing::debug!(error = %e, "networkctl reload failed, falling back to restart");
-            if let Err(e) = service_manager.restart(Service::Networking).await {
-                tracing::warn!(error = %e, "systemd-networkd restart failed");
-            } else {
-                restarted.push("systemd-networkd".into());
-            }
+    // sing-box: always restart if running (config is managed directly by user, not via changeset)
+    let singbox_status = service_manager.status(Service::SingBox).await;
+    let singbox_running = singbox_status.as_ref().map(|s| s.active).unwrap_or(false);
+    if singbox_running {
+        tracing::info!("sing-box config applied, restarting service");
+        if let Err(e) = service_manager.restart(Service::SingBox).await {
+            tracing::warn!(error = %e, "sing-box service restart failed");
         } else {
-            restarted.push("systemd-networkd (reload)".into());
+            restarted.push("sing-box".into());
         }
     } else {
-        tracing::info!("interfaces config unchanged, skipping");
-    }
-
-    if changeset.wireguard {
-        tracing::info!("wireguard config changed, restarting");
-        if let Err(e) = service_manager.restart(Service::Wireguard).await {
-            tracing::warn!(error = %e, "wireguard restart failed");
+        tracing::info!("sing-box service not running, starting");
+        if let Err(e) = service_manager.start(Service::SingBox).await {
+            tracing::warn!(error = %e, "sing-box service start failed");
         } else {
-            restarted.push("wireguard".into());
+            restarted.push("sing-box".into());
         }
-    } else {
-        tracing::info!("wireguard config unchanged, skipping");
     }
 
     // Apply sysctl settings

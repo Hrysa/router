@@ -131,6 +131,12 @@ pub async fn run(cfg: ServerConfig, jwt_secret: Arc<String>) -> anyhow::Result<(
             "/api/config/hooks",
             post(handlers::config::patch_hooks),
         )
+        // sing-box config
+        .route(
+            "/api/singbox/config",
+            get(handlers::config::get_singbox_config)
+                .put(handlers::config::put_singbox_config),
+        )
         // Config operations
         .route(
             "/api/config/validate",

@@ -12,6 +12,7 @@ pub enum Service {
     Pppd,
     Networking,
     Wireguard,
+    SingBox,
     Vnstat,
 }
 
@@ -23,6 +24,7 @@ impl Service {
             Self::Pppd => "pppd",
             Self::Networking => "systemd-networkd",
             Self::Wireguard => "wg-quick@wg0",
+            Self::SingBox => "sing-box",
             Self::Vnstat => "vnstat",
         }
     }
@@ -34,6 +36,7 @@ impl Service {
             Self::Pppd => "PPPoE",
             Self::Networking => "systemd-networkd",
             Self::Wireguard => "WireGuard",
+            Self::SingBox => "sing-box",
             Self::Vnstat => "vnStat",
         }
     }
@@ -46,6 +49,7 @@ impl Service {
             Self::Pppd,
             Self::Networking,
             Self::Wireguard,
+            Self::SingBox,
             Self::Vnstat,
         ]
     }
@@ -289,7 +293,7 @@ impl CommandExt for Command {
 
 /// Check that a command binary exists in PATH or common system paths.
 /// Returns the full path if found, error if not.
-fn find_command(name: &str) -> Result<String> {
+pub fn find_command(name: &str) -> Result<String> {
     // Try which first (respects PATH)
     if let Ok(path) = which::which(name) {
         return Ok(path.to_string_lossy().to_string());
@@ -325,6 +329,6 @@ mod tests {
 
     #[test]
     fn test_all_services() {
-        assert_eq!(Service::all().len(), 6);
+        assert_eq!(Service::all().len(), 7);
     }
 }
