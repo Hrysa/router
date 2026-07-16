@@ -486,7 +486,6 @@
                 <th>Match</th>
                 <th>Log</th>
                 <th>Counter</th>
-                <th>Enabled</th>
                 <th>Comment</th>
                 <th></th>
               </tr>
@@ -494,13 +493,12 @@
             <tbody>
               {#each inputRules as rule, idx}
                 <tr class={rule.enabled === false ? 'opacity-50' : ''}>
-                  <td><span class="badge {rule.action === 'accept' ? 'preset-filled-success-500' : rule.action === 'drop' ? 'preset-filled-error-500' : 'preset-filled-warning-500'}">{rule.action}</span></td>
+                  <td><button class="badge cursor-pointer {rule.action === 'accept' ? 'preset-filled-success-500' : rule.action === 'drop' ? 'preset-filled-error-500' : 'preset-filled-warning-500'}" onclick={() => toggleRuleEnabled(rule)} title={rule.enabled !== false ? 'Click to disable' : 'Click to enable'}>{rule.action}</button></td>
                   <td class="text-sm">{Array.isArray(rule.interfaces) ? rule.interfaces.join(', ') : (rule.interfaces || '*')}</td>
                   <td class="text-sm">{Array.isArray(rule.proto) ? rule.proto.join(', ') : (rule.proto || '*')}</td>
                   <td class="font-mono text-xs whitespace-nowrap">{formatMatch(rule)}</td>
                   <td>{rule.log ? '✓' : ''}</td>
                   <td class="font-mono text-xs text-surface-400 whitespace-nowrap">{rule.counter ? formatStat(rule.comment) : ''}</td>
-                  <td><Switch checked={rule.enabled !== false} onCheckedChange={() => toggleRuleEnabled(rule)} /></td>
                   <td class="text-sm text-surface-400 max-w-48 truncate">{rule.comment}</td>
                   <td class="text-right whitespace-nowrap">
                     <button class="btn-icon preset-tonal btn-sm" disabled={idx === 0} onclick={() => handleMoveRule(rule.id, 'up')} title="Move up">↑</button>
@@ -536,7 +534,6 @@
                 <th>Match</th>
                 <th>Log</th>
                 <th>Counter</th>
-                <th>Enabled</th>
                 <th>Comment</th>
                 <th></th>
               </tr>
@@ -544,14 +541,13 @@
             <tbody>
               {#each forwardRules as rule, idx}
                 <tr class={rule.enabled === false ? 'opacity-50' : ''}>
-                  <td><span class="badge {rule.action === 'accept' ? 'preset-filled-success-500' : rule.action === 'drop' ? 'preset-filled-error-500' : 'preset-filled-warning-500'}">{rule.action}</span></td>
+                  <td><button class="badge cursor-pointer {rule.action === 'accept' ? 'preset-filled-success-500' : rule.action === 'drop' ? 'preset-filled-error-500' : 'preset-filled-warning-500'}" onclick={() => toggleRuleEnabled(rule)} title={rule.enabled !== false ? 'Click to disable' : 'Click to enable'}>{rule.action}</button></td>
                   <td class="text-sm">{Array.isArray(rule.interfaces) ? rule.interfaces.join(', ') : (rule.interfaces || '*')}</td>
                   <td class="text-sm">{rule.oif || '*'}</td>
                   <td class="text-sm">{rule.proto && rule.proto.length ? rule.proto.join(', ') : '*'}</td>
                   <td class="font-mono text-xs whitespace-nowrap">{formatMatch(rule)}</td>
                   <td>{rule.log ? '✓' : ''}</td>
                   <td class="font-mono text-xs text-surface-400 whitespace-nowrap">{rule.counter ? formatStat(rule.comment) : ''}</td>
-                  <td><Switch checked={rule.enabled !== false} onCheckedChange={() => toggleRuleEnabled(rule)} /></td>
                   <td class="text-sm text-surface-400 max-w-48 truncate">{rule.comment}</td>
                   <td class="text-right whitespace-nowrap">
                     <button class="btn-icon preset-tonal btn-sm" disabled={idx === 0} onclick={() => handleMoveRule(rule.id, 'up')} title="Move up">↑</button>
