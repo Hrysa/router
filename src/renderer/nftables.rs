@@ -1010,9 +1010,9 @@ fn render_tproxy_table(config: &Config, doc: &mut NftablesDocument) {
 
     for rule in &tproxy_rules {
         let comment = if rule.comment.is_empty() {
-            None
+            format!("[{}]", rule.id)
         } else {
-            Some(rule.comment.as_str())
+            format!("[{}] {}", rule.id, rule.comment)
         };
         for proto_opt in resolve_protos(rule) {
             let proto_str = proto_opt.as_deref().unwrap_or("tcp");
@@ -1075,7 +1075,7 @@ fn render_tproxy_table(config: &Config, doc: &mut NftablesDocument) {
                 "mangle",
                 "prerouting",
                 stmts,
-                comment,
+                Some(&comment),
             ));
         }
     }
