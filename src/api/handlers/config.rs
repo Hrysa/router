@@ -681,8 +681,8 @@ pub async fn firewall_stats(State(_state): State<AppState>) -> Result<Json<Value
             Err(_) => continue,
         };
 
-        // nft -j JSON: {"nftables": [ {"rule": {"comment": "...", "expr": [...]}}, ... ]}
-        // comment is at rule level, counter is inside expr array
+        // nft -j JSON: {"nftables": [ {"rule": {"comment": "[id] name", "expr": [...]}}, ... ]}
+        // Comment format: "[id] comment" — extract ID for stats matching
         if let Some(entries) = parsed.get("nftables").and_then(|v| v.as_array()) {
             for entry in entries {
                 if let Some(rule) = entry.get("rule") {
@@ -690,12 +690,15 @@ pub async fn firewall_stats(State(_state): State<AppState>) -> Result<Json<Value
                         .get("comment")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    let rule_name = comment.split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .to_string();
 
-                    if rule_name.is_empty() {
+                    // Parse ID from "[id] ..." format
+                    let rule_id = if let Some(rest) = comment.strip_prefix('[') {
+                        rest.split(']').next().unwrap_or("").to_string()
+                    } else {
+                        continue;
+                    };
+
+                    if rule_id.is_empty() {
                         continue;
                     }
 
@@ -706,7 +709,7 @@ pub async fn firewall_stats(State(_state): State<AppState>) -> Result<Json<Value
                                 let packets = counter.get("packets").and_then(|v| v.as_u64()).unwrap_or(0);
                                 let bytes = counter.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
                                 stats.insert(
-                                    rule_name.clone(),
+                                    rule_id.clone(),
                                     json!({"packets": packets, "bytes": bytes}),
                                 );
                                 break;

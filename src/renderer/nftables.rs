@@ -563,9 +563,9 @@ fn render_filter_table(config: &Config, doc: &mut NftablesDocument) {
         .filter(|r| r.enabled && r.action != Action::Tproxy)
     {
         let comment = if rule.comment.is_empty() {
-            None
+            format!("[{}]", rule.id)
         } else {
-            Some(rule.comment.as_str())
+            format!("[{}] {}", rule.id, rule.comment)
         };
         for proto in resolve_protos(rule) {
             let stmts = build_rule_stmts(config, rule, proto.as_deref());
@@ -574,7 +574,7 @@ fn render_filter_table(config: &Config, doc: &mut NftablesDocument) {
                 "filter",
                 "input",
                 stmts,
-                comment,
+                Some(&comment),
             ));
         }
     }
@@ -610,9 +610,9 @@ fn render_filter_table(config: &Config, doc: &mut NftablesDocument) {
         .filter(|r| r.enabled && r.action != Action::Tproxy)
     {
         let comment = if rule.comment.is_empty() {
-            None
+            format!("[{}]", rule.id)
         } else {
-            Some(rule.comment.as_str())
+            format!("[{}] {}", rule.id, rule.comment)
         };
         for proto in resolve_protos(rule) {
             let stmts = build_rule_stmts(config, rule, proto.as_deref());
@@ -621,7 +621,7 @@ fn render_filter_table(config: &Config, doc: &mut NftablesDocument) {
                 "filter",
                 "forward",
                 stmts,
-                comment,
+                Some(&comment),
             ));
         }
     }

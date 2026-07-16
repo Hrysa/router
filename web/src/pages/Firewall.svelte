@@ -525,7 +525,7 @@
                   <td class="text-sm">{Array.isArray(rule.proto) ? rule.proto.join(', ') : (rule.proto || '*')}</td>
                   <td class="font-mono text-xs whitespace-nowrap">{formatMatch(rule)}</td>
                   <td>{rule.log ? '✓' : ''}</td>
-                  <td class="font-mono text-xs text-surface-400 whitespace-nowrap">{rule.counter ? formatStat(rule.comment) : ''}</td>
+                  <td class="font-mono text-xs text-surface-400 whitespace-nowrap">{rule.counter ? formatStat(String(rule.id)) : ''}</td>
                   <td class="text-sm text-surface-400 max-w-48 truncate">{rule.comment}</td>
                   <td class="text-right whitespace-nowrap">
                     <button class="btn-icon preset-tonal btn-sm" disabled={idx === 0} onclick={() => handleMoveRule(rule.id, 'up')} title="Move up">↑</button>
@@ -574,7 +574,7 @@
                   <td class="text-sm">{rule.proto && rule.proto.length ? rule.proto.join(', ') : '*'}</td>
                   <td class="font-mono text-xs whitespace-nowrap">{formatMatch(rule)}</td>
                   <td>{rule.log ? '✓' : ''}</td>
-                  <td class="font-mono text-xs text-surface-400 whitespace-nowrap">{rule.counter ? formatStat(rule.comment) : ''}</td>
+                  <td class="font-mono text-xs text-surface-400 whitespace-nowrap">{rule.counter ? formatStat(String(rule.id)) : ''}</td>
                   <td class="text-sm text-surface-400 max-w-48 truncate">{rule.comment}</td>
                   <td class="text-right whitespace-nowrap">
                     <button class="btn-icon preset-tonal btn-sm" disabled={idx === 0} onclick={() => handleMoveRule(rule.id, 'up')} title="Move up">↑</button>
