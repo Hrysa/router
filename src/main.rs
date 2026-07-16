@@ -114,6 +114,9 @@ async fn main() -> anyhow::Result<()> {
     }
     tracing::info!("config validated");
 
+    // Disable hardware offloads on all physical NICs
+    disable_offloads();
+
     // Run before_start hooks
     service::hooks::run_hooks("before_start", &config.hooks.before_start).await?;
 
@@ -144,4 +147,43 @@ async fn main() -> anyhow::Result<()> {
     api::server::run(server_config, jwt_secret).await?;
 
     Ok(())
+}
+
+/// Find all physical NICs and disable hardware offloads.
+fn disable_offloads() {
+    let offload_args = ["tso", "gso", "gro", "lro", "ufo", "rx", "tx", "sg"];
+
+    let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "lo" {
+            continue;
+        }
+        // Physical NICs have a `device` symlink
+        if !entry.path().join("device").exists() {
+            continue;
+        }
+
+        let mut cmd = std::process::Command::new("ethtool");
+        cmd.args(["-K", &name]);
+        for arg in &offload_args {
+            cmd.arg(arg).arg("off");
+        }
+
+        match cmd.output() {
+            Ok(out) if out.status.success() => {
+                tracing::info!(nic = %name, "disabled hardware offloads");
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                tracing::warn!(nic = %name, error = %stderr.trim(), "failed to disable offloads");
+            }
+            Err(e) => {
+                tracing::warn!(nic = %name, error = %e, "ethtool not available");
+            }
+        }
+    }
 }
