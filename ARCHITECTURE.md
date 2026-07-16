@@ -8,19 +8,19 @@ routerd is a Linux router daemon that manages network services through a unified
 ┌─────────────┐        ┌────────────────────────────────────────┐
 │  SPA WebUI  │───────→│          API Server (routerd)          │
 └─────────────┘  REST  │                                        │
-                       │  ┌──────────┐  ┌───────────────────┐  │
-┌─────────────┐        │  │ Config   │  │  Config Renderer   │  │
-│  CLI tool   │───────→│  │ Store    │  │                    │  │
-│ (optional)  │  REST  │  │ (YAML)  │  │                    │  │
-└─────────────┘        │  └────┬─────┘  └────────┬──────────┘  │
+                       │  ┌──────────┐  ┌───────────────────┐   │
+┌─────────────┐        │  │ Config   │  │  Config Renderer  │   │
+│  CLI tool   │───────→│  │ Store    │  │                   │   │
+│ (optional)  │  REST  │  │ (YAML)   │  │                   │   │
+└─────────────┘        │  └────┬─────┘  └────────┬──────────┘   │
                        │       │                 │              │
                        │       ▼                 ▼              │
-                       │  ┌────────────────────────────────┐   │
-                       │  │   Service Manager (apply)      │   │
-                       │  │  write configs + restart svc   │   │
-                       │  └────────────────────────────────┘   │
+                       │  ┌────────────────────────────────┐    │
+                       │  │   Service Manager (apply)      │    │
+                       │  │  write configs + restart svc   │    │
+                       │  └────────────────────────────────┘    │
                        └────────────────────────────────────────┘
-                                          │
+                                           │
                      ┌─────────┬───────────┼───────────┬──────────┐
                      ▼         ▼           ▼           ▼          ▼
                 nftables    kea-dhcp4  unbound   systemd-     wireguard
