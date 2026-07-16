@@ -147,6 +147,19 @@
     return `${s.packets} pkts / ${formatBytes(s.bytes)}`;
   }
 
+  function formatPfMatch(pf: any): string {
+    const src = pf.source_address || '';
+    const sport = '';
+    const dst = pf.target_address || '';
+    const dport = formatPort(pf.target_port) || '';
+    const left = src || sport ? `${src}${sport ? ':' + sport : ''}` : '';
+    const right = dst || dport ? `${dst}${dport ? ':' + dport : ''}` : '';
+    if (left && right) return `${left} → ${right}`;
+    if (left) return `${left} → *`;
+    if (right) return `* → ${right}`;
+    return '*';
+  }
+
   function pfToPayload(form: any) {
     const payload: any = {
       id: form.id ?? 0,
@@ -576,8 +589,7 @@
           <table class="table">
             <thead>
               <tr>
-                <th>Source</th>
-                <th>Target</th>
+                <th>Source → Target</th>
                 <th>Protocol</th>
                 <th>Interfaces</th>
                 <th>Redirect</th>
@@ -589,8 +601,7 @@
             <tbody>
               {#each portForwards as pf}
                 <tr class={!pf.enabled ? 'opacity-50' : ''}>
-                  <td class="font-mono text-xs">{pf.source_address ? pf.source_address + ' ' : ''}</td>
-                  <td class="font-mono text-xs">{pf.target_address ? pf.target_address + ':' : ''}{formatPort(pf.target_port)}</td>
+                  <td class="font-mono text-xs whitespace-nowrap">{formatPfMatch(pf)}</td>
                   <td class="text-sm">{pf.proto}</td>
                   <td class="text-sm">{Array.isArray(pf.interfaces) ? pf.interfaces.join(', ') : (pf.interfaces || '*')}</td>
                   <td class="font-mono text-xs">{pf.redirect_address}:{formatPort(pf.redirect_port)}</td>
