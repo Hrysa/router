@@ -252,6 +252,17 @@ fn fib_daddr_local_match() -> Statement<'static> {
     })
 }
 
+fn fib_saddr_local_match() -> Statement<'static> {
+    Statement::Match(Match {
+        left: Expression::Named(NamedExpression::Fib(Fib {
+            result: FibResult::Type,
+            flags: HashSet::from([FibFlag::Saddr]),
+        })),
+        right: Expression::String(Cow::Borrowed("local")),
+        op: Operator::EQ,
+    })
+}
+
 fn proto_match(proto: &str) -> Statement<'static> {
     Statement::Match(Match {
         left: Expression::Named(NamedExpression::Meta(Meta {
@@ -409,7 +420,9 @@ fn build_rule_stmts(config: &Config, rule: &FirewallRule, proto: Option<&str>) -
 
     // Source address
     if let Some(saddr) = &rule.saddr {
-        if let Some(stmt) = set_ref_match(config, "saddr", saddr) {
+        if saddr == "@local" {
+            stmts.push(fib_saddr_local_match());
+        } else if let Some(stmt) = set_ref_match(config, "saddr", saddr) {
             stmts.push(stmt);
         } else {
             stmts.push(ip_saddr_match(saddr));
@@ -811,7 +824,7 @@ fn build_port_forward_match_stmts<'a>(pf: &'a PortForward, proto: &str) -> Vec<S
     // Source address
     if let Some(ref saddr) = pf.source_address {
         if saddr == "@local" {
-            stmts.push(fib_daddr_local_match());
+            stmts.push(fib_saddr_local_match());
         } else {
             stmts.push(ip_saddr_match(saddr));
         }
