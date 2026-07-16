@@ -475,6 +475,15 @@ pub struct PortForward {
     /// Source address filter (client IP). Optional. Alias: source_ip.
     #[serde(default, alias = "source_ip", skip_serializing_if = "Option::is_none")]
     pub source_address: Option<String>,
+    /// Invert interfaces match (match everything EXCEPT these interfaces).
+    #[serde(default)]
+    pub interfaces_invert: bool,
+    /// Invert source address match.
+    #[serde(default)]
+    pub source_address_invert: bool,
+    /// Invert target address match.
+    #[serde(default)]
+    pub target_address_invert: bool,
     /// Interfaces to match on ingress. Required — at least one must be specified.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub interfaces: Vec<String>,

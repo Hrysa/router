@@ -864,9 +864,9 @@ fn build_port_forward_match_stmts<'a>(pf: &'a PortForward, proto: &str) -> Vec<S
 
     // Interface match
     if pf.interfaces.len() == 1 {
-        stmts.push(iifname_match(&pf.interfaces[0], false));
+        stmts.push(iifname_match(&pf.interfaces[0], pf.interfaces_invert));
     } else if pf.interfaces.len() > 1 {
-        stmts.push(iifname_set_match(&pf.interfaces, false));
+        stmts.push(iifname_set_match(&pf.interfaces, pf.interfaces_invert));
     }
 
     // Protocol
@@ -877,7 +877,7 @@ fn build_port_forward_match_stmts<'a>(pf: &'a PortForward, proto: &str) -> Vec<S
         if saddr == "@local" {
             stmts.push(fib_saddr_local_match());
         } else {
-            stmts.push(ip_saddr_match(saddr, false));
+            stmts.push(ip_saddr_match(saddr, pf.source_address_invert));
         }
     }
 
@@ -886,7 +886,7 @@ fn build_port_forward_match_stmts<'a>(pf: &'a PortForward, proto: &str) -> Vec<S
         if taddr == "@local" {
             stmts.push(fib_daddr_local_match());
         } else {
-            stmts.push(ip_daddr_match(taddr, false));
+            stmts.push(ip_daddr_match(taddr, pf.target_address_invert));
         }
     }
 
@@ -1228,6 +1228,9 @@ mod tests {
             interfaces: vec!["eth0".into()],
             redirect_address: "192.168.1.100".into(),
             redirect_port: Some(PortSpec::Single(8080)),
+            interfaces_invert: false,
+            source_address_invert: false,
+            target_address_invert: false,
             enabled: true,
         });
         let val = render_json(&config);
@@ -1423,6 +1426,9 @@ mod tests {
             interfaces: vec!["eth0".into()],
             redirect_address: "192.168.1.100".into(),
             redirect_port: Some(PortSpec::Single(8080)),
+            interfaces_invert: false,
+            source_address_invert: false,
+            target_address_invert: false,
             enabled: true,
         });
         let val = render_json(&config);
@@ -1444,6 +1450,9 @@ mod tests {
             interfaces: vec!["eth0".into()],
             redirect_address: "10.99.0.5".into(),
             redirect_port: Some(PortSpec::Single(443)),
+            interfaces_invert: false,
+            source_address_invert: false,
+            target_address_invert: false,
             enabled: true,
         });
         let val = render_json(&config);
@@ -1466,13 +1475,15 @@ mod tests {
             interfaces: vec!["eth0".into()],
             redirect_address: "192.168.1.100".into(),
             redirect_port: Some(PortSpec::Single(8080)),
+            interfaces_invert: false,
+            source_address_invert: false,
+            target_address_invert: false,
             enabled: true,
         });
         let val = render_json(&config);
         let json_str = serde_json::to_string(&val).unwrap();
-        // CIDR is now rendered as a prefix expression, so check for the address
-        assert!(json_str.contains("10.0.0.0"));
         assert!(json_str.contains("dnat"));
+        assert!(json_str.contains("10.0.0.0"));
     }
 
     #[test]
@@ -1488,6 +1499,9 @@ mod tests {
             interfaces: vec!["eth0".into(), "wg0".into()],
             redirect_address: "192.168.1.100".into(),
             redirect_port: Some(PortSpec::Single(8080)),
+            interfaces_invert: false,
+            source_address_invert: false,
+            target_address_invert: false,
             enabled: true,
         });
         let val = render_json(&config);

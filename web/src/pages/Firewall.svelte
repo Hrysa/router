@@ -52,7 +52,8 @@
   }
 
   function emptyPortForward() {
-    return { comment: '', proto: 'tcp', target_port: '', target_address: '', source_address: '', interfaces: [] as string[], redirect_address: '', redirect_port: '', enabled: true };
+    return { comment: '', proto: 'tcp', target_port: '', target_address: '', source_address: '', interfaces: [] as string[], redirect_address: '', redirect_port: '', enabled: true,
+      interfaces_invert: false, source_address_invert: false, target_address_invert: false };
   }
 
   function emptyNftSet() {
@@ -177,9 +178,12 @@
       redirect_port: parsePort(form.redirect_port),
       enabled: form.enabled,
     };
-    if (form.target_address) payload.target_address = form.target_address;
-    if (form.source_address) payload.source_address = form.source_address;
     if (form.interfaces.length > 0) payload.interfaces = [...form.interfaces];
+    if (form.interfaces_invert) payload.interfaces_invert = true;
+    if (form.target_address) payload.target_address = form.target_address;
+    if (form.target_address_invert) payload.target_address_invert = true;
+    if (form.source_address) payload.source_address = form.source_address;
+    if (form.source_address_invert) payload.source_address_invert = true;
     return payload;
   }
 
@@ -346,8 +350,11 @@
       proto: pf.proto,
       target_port: formatPort(pf.target_port),
       target_address: pf.target_address || '',
+      target_address_invert: pf.target_address_invert || false,
       source_address: pf.source_address || '',
+      source_address_invert: pf.source_address_invert || false,
       interfaces: [...(pf.interfaces || [])],
+      interfaces_invert: pf.interfaces_invert || false,
       redirect_address: pf.redirect_address,
       redirect_port: formatPort(pf.redirect_port),
       enabled: pf.enabled,
@@ -851,6 +858,10 @@
         <label class="label col-span-2">
           <span class="label-text">Interfaces</span>
           <InterfaceSelect bind:value={pfForm.interfaces} multiple placeholder="Select interfaces" items={allInterfaces} />
+          <label class="flex items-center gap-2 mt-1">
+            <input type="checkbox" class="checkbox" bind:checked={pfForm.interfaces_invert} />
+            <span class="text-sm">Invert (NOT these interfaces)</span>
+          </label>
         </label>
         <label class="label">
           <span class="label-text">Source Address (optional)</span>
@@ -864,6 +875,10 @@
               {/each}
             </select>
           </div>
+          <label class="flex items-center gap-2 mt-1">
+            <input type="checkbox" class="checkbox" bind:checked={pfForm.source_address_invert} />
+            <span class="text-sm">Invert (NOT this address)</span>
+          </label>
         </label>
         <label></label>
         <label class="label">
@@ -878,6 +893,10 @@
               {/each}
             </select>
           </div>
+          <label class="flex items-center gap-2 mt-1">
+            <input type="checkbox" class="checkbox" bind:checked={pfForm.target_address_invert} />
+            <span class="text-sm">Invert (NOT this address)</span>
+          </label>
         </label>
         {#if pfForm.proto === 'tcp' || pfForm.proto === 'udp' || pfForm.proto === 'tcp+udp'}
         <label class="label">
