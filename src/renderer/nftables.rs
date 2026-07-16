@@ -290,6 +290,21 @@ fn ct_state_match(states: &[String]) -> Statement<'static> {
     })
 }
 
+fn ct_state_established_related() -> Statement<'static> {
+    Statement::Match(Match {
+        left: Expression::Named(NamedExpression::CT(CT {
+            key: Cow::Borrowed("state"),
+            family: None,
+            dir: None,
+        })),
+        right: Expression::Named(NamedExpression::Set(vec![
+            SetItem::Element(Expression::String(Cow::Borrowed("established"))),
+            SetItem::Element(Expression::String(Cow::Borrowed("related"))),
+        ])),
+        op: Operator::EQ,
+    })
+}
+
 // ── Port spec → Expression ───────────────────────────────────────────────────
 
 fn port_spec_expr(spec: &PortSpec) -> Expression<'static> {
@@ -506,6 +521,7 @@ fn render_filter_table(config: &Config, doc: &mut NftablesDocument) {
     }
 
     // Input chain
+    let input_policy = policy_from_str(&config.firewall.default_policy.input);
     doc.objects.push(add_chain(
         NfFamily::INet,
         "filter",
@@ -513,8 +529,19 @@ fn render_filter_table(config: &Config, doc: &mut NftablesDocument) {
         Some(NfChainType::Filter),
         Some(NfHook::Input),
         Some(0),
-        Some(policy_from_str(&config.firewall.default_policy.input)),
+        Some(input_policy),
     ));
+
+    // Implicit: accept established/related connections when policy is drop
+    if input_policy == NfChainPolicy::Drop {
+        doc.objects.push(add_rule(
+            NfFamily::INet,
+            "filter",
+            "input",
+            vec![ct_state_established_related(), Statement::Accept(None)],
+            None,
+        ));
+    }
 
     for rule in config
         .firewall
@@ -541,6 +568,7 @@ fn render_filter_table(config: &Config, doc: &mut NftablesDocument) {
     }
 
     // Forward chain
+    let forward_policy = policy_from_str(&config.firewall.default_policy.forward);
     doc.objects.push(add_chain(
         NfFamily::INet,
         "filter",
@@ -548,8 +576,19 @@ fn render_filter_table(config: &Config, doc: &mut NftablesDocument) {
         Some(NfChainType::Filter),
         Some(NfHook::Forward),
         Some(0),
-        Some(policy_from_str(&config.firewall.default_policy.forward)),
+        Some(forward_policy),
     ));
+
+    // Implicit: accept established/related connections when policy is drop
+    if forward_policy == NfChainPolicy::Drop {
+        doc.objects.push(add_rule(
+            NfFamily::INet,
+            "filter",
+            "forward",
+            vec![ct_state_established_related(), Statement::Accept(None)],
+            None,
+        ));
+    }
 
     for rule in config
         .firewall
