@@ -34,103 +34,90 @@
   }
 </script>
 
-<div class="monitoring-page">
-  <h2>Monitoring</h2>
+<div class="max-w-6xl">
+  <h2 class="h2 mb-6">Monitoring</h2>
 
   {#if loading}
-    <p>Loading...</p>
+    <div class="placeholder animate-pulse h-32"></div>
   {:else}
-    <section>
-      <h3>System</h3>
-      <div class="stats-row">
-        <div class="stat-card">
-          <div class="stat-label">Hostname</div>
-          <div class="stat-value">{system?.hostname || '-'}</div>
+    <section class="mb-6">
+      <h3 class="h4 mb-3">System</h3>
+      <div class="grid grid-cols-2 gap-4">
+        <div class="card p-4">
+          <div class="text-sm text-surface-500 mb-1">Hostname</div>
+          <div class="text-xl font-semibold">{system?.hostname || '-'}</div>
         </div>
-        <div class="stat-card">
-          <div class="stat-label">Uptime</div>
-          <div class="stat-value">{system?.uptime_human || '-'}</div>
+        <div class="card p-4">
+          <div class="text-sm text-surface-500 mb-1">Uptime</div>
+          <div class="text-xl font-semibold">{system?.uptime_human || '-'}</div>
         </div>
       </div>
     </section>
 
-    <section>
-      <h3>Interfaces</h3>
+    <section class="mb-6">
+      <h3 class="h4 mb-3">Interfaces</h3>
       {#if interfaces.length === 0}
-        <p class="empty">No interfaces detected</p>
+        <p class="text-surface-500 italic">No interfaces detected</p>
       {:else}
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Status</th>
-              <th>MAC</th>
-              <th>MTU</th>
-              <th>RX</th>
-              <th>TX</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each interfaces as iface}
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
               <tr>
-                <td>{iface.name}</td>
-                <td>
-                  <span class="status" class:up={iface.up} class:down={!iface.up}>
-                    {iface.up ? 'UP' : 'DOWN'}
-                  </span>
-                </td>
-                <td>{iface.mac || '-'}</td>
-                <td>{iface.mtu}</td>
-                <td>{formatBytes(iface.rx_bytes)}</td>
-                <td>{formatBytes(iface.tx_bytes)}</td>
+                <th>Name</th>
+                <th>Status</th>
+                <th>MAC</th>
+                <th>MTU</th>
+                <th>RX</th>
+                <th>TX</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {#each interfaces as iface}
+                <tr>
+                  <td class="font-mono">{iface.name}</td>
+                  <td>
+                    <span class="badge {iface.up ? 'preset-filled-success-500' : 'preset-filled-error-500'}">
+                      {iface.up ? 'UP' : 'DOWN'}
+                    </span>
+                  </td>
+                  <td class="font-mono text-sm">{iface.mac || '-'}</td>
+                  <td>{iface.mtu}</td>
+                  <td>{formatBytes(iface.rx_bytes)}</td>
+                  <td>{formatBytes(iface.tx_bytes)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     </section>
 
     <section>
-      <h3>DHCP Leases</h3>
+      <h3 class="h4 mb-3">DHCP Leases</h3>
       {#if leases.length === 0}
-        <p class="empty">No active leases</p>
+        <p class="text-surface-500 italic">No active leases</p>
       {:else}
-        <table>
-          <thead>
-            <tr>
-              <th>IP</th>
-              <th>MAC</th>
-              <th>Hostname</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each leases as lease}
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
               <tr>
-                <td>{lease.ip}</td>
-                <td>{lease.mac}</td>
-                <td>{lease.hostname || '-'}</td>
+                <th>IP</th>
+                <th>MAC</th>
+                <th>Hostname</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {#each leases as lease}
+                <tr>
+                  <td class="font-mono">{lease.ip}</td>
+                  <td class="font-mono text-sm">{lease.mac}</td>
+                  <td>{lease.hostname || '-'}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     </section>
   {/if}
 </div>
-
-<style>
-  .monitoring-page { max-width: 1200px; }
-  h2 { margin: 0 0 1.5rem; color: #f1f5f9; }
-  h3 { margin: 1.5rem 0 0.75rem; color: #94a3b8; font-size: 1rem; }
-  .stats-row { display: flex; gap: 1rem; }
-  .stat-card { background: #1e293b; padding: 1rem; border-radius: 8px; flex: 1; }
-  .stat-label { color: #94a3b8; font-size: 0.875rem; margin-bottom: 0.25rem; }
-  .stat-value { font-size: 1.25rem; font-weight: 600; }
-  table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; }
-  th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #334155; }
-  th { background: #334155; color: #94a3b8; font-weight: 600; font-size: 0.875rem; text-transform: uppercase; }
-  .status { padding: 0.125rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
-  .status.up { background: #059669; color: white; }
-  .status.down { background: #dc2626; color: white; }
-  .empty { color: #64748b; font-style: italic; }
-</style>

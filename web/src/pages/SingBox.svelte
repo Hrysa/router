@@ -6,8 +6,9 @@
     applyConfig,
   } from '../lib/api';
   import { notify } from '../lib/stores';
+  import { Tabs } from '@skeletonlabs/skeleton-svelte';
 
-  let activeTab = $state<'status' | 'config'>('status');
+  let activeTab = $state('status');
 
   // Service status
   let svcStatus = $state<any>(null);
@@ -107,186 +108,78 @@
   }
 </script>
 
-<div class="singbox-page">
-  <h2>sing-box</h2>
+<div class="max-w-4xl">
+  <h2 class="h2 mb-6">sing-box</h2>
 
-  <div class="tabs">
-    <button class="tab" class:active={activeTab === 'status'} onclick={() => activeTab = 'status'}>
-      Status
-    </button>
-    <button class="tab" class:active={activeTab === 'config'} onclick={() => activeTab = 'config'}>
-      Config
-    </button>
-  </div>
+  <Tabs value={activeTab} onValueChange={(e) => activeTab = e.value}>
+    <Tabs.List>
+      <Tabs.Trigger value="status">Status</Tabs.Trigger>
+      <Tabs.Trigger value="config">Config</Tabs.Trigger>
+    </Tabs.List>
 
-  {#if activeTab === 'status'}
-    <div class="tab-content">
-      {#if loadingStatus}
-        <p class="loading">Loading...</p>
-      {:else}
-        <div class="status-card">
-          <div class="status-header">
-            <span class="service-name">sing-box</span>
-            <span class="status-badge" class:active={svcStatus?.active} class:inactive={!svcStatus?.active}>
-              {svcStatus?.active ? '● Running' : '○ Stopped'}
-            </span>
+    <Tabs.Content value="status">
+      <div class="min-h-[200px]">
+        {#if loadingStatus}
+          <div class="placeholder animate-pulse h-32"></div>
+        {:else}
+          <div class="card p-5 border border-surface-200">
+            <div class="flex justify-between items-center mb-3">
+              <span class="font-semibold text-lg">sing-box</span>
+              <span class="badge {svcStatus?.active ? 'preset-filled-success-500' : 'preset-tonal-surface'}">
+                {svcStatus?.active ? '● Running' : '○ Stopped'}
+              </span>
+            </div>
+
+            <div class="text-sm text-surface-500 mb-4 space-y-1">
+              <div>Service: sing-box</div>
+              {#if svcStatus?.pid}
+                <div>PID: {svcStatus.pid}</div>
+              {/if}
+              <div>Status: {svcStatus?.status || 'unknown'}</div>
+            </div>
+
+            <div class="flex gap-2">
+              {#if svcStatus?.active}
+                <button class="btn preset-filled-error-500" onclick={handleStop}>Stop</button>
+                <button class="btn preset-filled-warning-500" onclick={handleRestart}>Restart</button>
+              {:else}
+                <button class="btn preset-filled-success-500" onclick={handleStart}>Start</button>
+              {/if}
+            </div>
           </div>
+        {/if}
+      </div>
+    </Tabs.Content>
 
-          <div class="service-info">
-            <div>Service: sing-box</div>
-            {#if svcStatus?.pid}
-              <div>PID: {svcStatus.pid}</div>
-            {/if}
-            <div>Status: {svcStatus?.status || 'unknown'}</div>
+    <Tabs.Content value="config">
+      <div class="min-h-[200px]">
+        {#if loadingConfig}
+          <div class="placeholder animate-pulse h-32"></div>
+        {:else}
+          <section class="mb-6">
+            <h3 class="h4 mb-1">sing-box Configuration</h3>
+            <p class="text-surface-500 text-sm mb-3">
+              Edit the sing-box JSONC config. Written to <code class="code">/etc/sing-box/config.jsonc</code>.
+            </p>
+
+            <textarea
+              class="textarea font-mono text-sm"
+              bind:value={singboxConfig}
+              rows="24"
+              spellcheck="false"
+            ></textarea>
+          </section>
+
+          <div class="flex gap-2">
+            <button class="btn preset-filled-primary-500" onclick={saveConfig} disabled={savingConfig}>
+              {savingConfig ? 'Saving...' : 'Save'}
+            </button>
+            <button class="btn preset-filled-success-500" onclick={saveAndApply} disabled={savingConfig}>
+              Save & Apply
+            </button>
           </div>
-
-          <div class="service-actions">
-            {#if svcStatus?.active}
-              <button class="stop" onclick={handleStop}>Stop</button>
-              <button class="restart" onclick={handleRestart}>Restart</button>
-            {:else}
-              <button class="start" onclick={handleStart}>Start</button>
-            {/if}
-          </div>
-        </div>
-      {/if}
-    </div>
-  {:else if activeTab === 'config'}
-    <div class="tab-content">
-      {#if loadingConfig}
-        <p class="loading">Loading...</p>
-      {:else}
-        <section>
-          <h3>sing-box Configuration</h3>
-          <p class="section-desc">Edit the sing-box JSONC config. Written to <code>/etc/sing-box/config.jsonc</code>.</p>
-
-          <textarea
-            bind:value={singboxConfig}
-            rows="24"
-            spellcheck="false"
-          ></textarea>
-        </section>
-
-        <div class="toolbar">
-          <button class="primary" onclick={saveConfig} disabled={savingConfig}>
-            {savingConfig ? 'Saving...' : 'Save'}
-          </button>
-          <button class="apply" onclick={saveAndApply} disabled={savingConfig}>
-            Save & Apply
-          </button>
-        </div>
-      {/if}
-    </div>
-  {/if}
+        {/if}
+      </div>
+    </Tabs.Content>
+  </Tabs>
 </div>
-
-<style>
-  .singbox-page { max-width: 900px; }
-
-  h2 { margin: 0 0 1.5rem; color: #f1f5f9; }
-
-  .tabs {
-    display: flex;
-    gap: 0;
-    border-bottom: 1px solid #334155;
-    margin-bottom: 1.5rem;
-  }
-
-  .tab {
-    padding: 0.75rem 1.5rem;
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: #94a3b8;
-    cursor: pointer;
-    font-size: 0.9375rem;
-  }
-
-  .tab:hover { color: #e2e8f0; }
-  .tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
-
-  .tab-content { min-height: 200px; }
-  .loading { color: #64748b; }
-
-  /* Status tab */
-  .status-card {
-    background: #1e293b;
-    border-radius: 8px;
-    padding: 1.25rem;
-  }
-
-  .status-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 0.75rem;
-  }
-
-  .service-name { font-weight: 600; font-size: 1.125rem; }
-
-  .status-badge {
-    font-size: 0.875rem;
-    padding: 0.25rem 0.75rem;
-    border-radius: 4px;
-  }
-
-  .status-badge.active { background: #059669; color: white; }
-  .status-badge.inactive { background: #475569; color: #94a3b8; }
-
-  .service-info {
-    color: #94a3b8;
-    font-size: 0.875rem;
-    margin-bottom: 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  .service-actions { display: flex; gap: 0.5rem; }
-  .service-actions button { flex: 0 0 auto; }
-
-  .start { background: #059669; }
-  .start:hover { background: #047857; }
-  .stop { background: #dc2626; }
-  .stop:hover { background: #b91c1c; }
-  .restart { background: #d97706; }
-  .restart:hover { background: #b45309; }
-
-  /* Config tab */
-  section { margin-bottom: 1.5rem; }
-  h3 { margin: 0 0 0.25rem; color: #94a3b8; font-size: 1rem; }
-  .section-desc { color: #64748b; font-size: 0.8125rem; margin: 0 0 1rem; }
-  .section-desc code { color: #94a3b8; background: #0f172a; padding: 0.125rem 0.375rem; border-radius: 3px; font-size: 0.8125rem; }
-
-  textarea {
-    width: 100%;
-    background: #0f172a;
-    color: #e2e8f0;
-    border: 1px solid #334155;
-    border-radius: 6px;
-    padding: 0.75rem;
-    font-size: 0.8125rem;
-    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    resize: vertical;
-    box-sizing: border-box;
-    tab-size: 2;
-  }
-  textarea:focus { outline: none; border-color: #3b82f6; }
-
-  .toolbar { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
-
-  button {
-    padding: 0.5rem 1rem;
-    background: #334155;
-    color: #e2e8f0;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-  }
-  button:hover { background: #475569; }
-  button.primary { background: #3b82f6; }
-  button.primary:hover { background: #2563eb; }
-  button.apply { background: #059669; }
-  button.apply:hover { background: #047857; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-</style>

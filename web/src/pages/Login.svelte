@@ -61,74 +61,33 @@
   }
 </script>
 
-<div class="login-page">
-  <div class="login-card">
-    <h1>routerd</h1>
-    <p class="subtitle">{isSetup ? 'Create admin password' : 'Admin sign in'}</p>
+<div class="flex items-center justify-center min-h-screen bg-surface-50">
+  <div class="card p-8 w-96 shadow-xl">
+    <div class="text-center mb-6">
+      <h1 class="h2">routerd</h1>
+      <p class="text-surface-500 mt-1">{isSetup ? 'Create admin password' : 'Admin sign in'}</p>
+    </div>
 
     {#if isSetup}
-      <label>
-        Password
-        <input type="password" bind:value={password} placeholder="Enter password" />
+      <label class="label mb-4">
+        <span class="label-text">Password</span>
+        <input type="password" class="input" bind:value={password} placeholder="Enter password" />
       </label>
-      <label>
-        Confirm Password
-        <input type="password" bind:value={confirmPassword} placeholder="Confirm password" />
+      <label class="label mb-6">
+        <span class="label-text">Confirm Password</span>
+        <input type="password" class="input" bind:value={confirmPassword} placeholder="Confirm password" />
       </label>
-      <button class="primary" onclick={handleSetup} disabled={loading}>
+      <button class="btn preset-filled-primary-500 w-full" onclick={handleSetup} disabled={loading}>
         {loading ? 'Setting up...' : 'Create Password'}
       </button>
     {:else}
-      <label>
-        Password
-        <input type="password" bind:value={password} placeholder="Enter password" onkeydown={(e) => e.key === 'Enter' && handleLogin()} />
+      <label class="label mb-6">
+        <span class="label-text">Password</span>
+        <input type="password" class="input" bind:value={password} placeholder="Enter password" onkeydown={(e) => e.key === 'Enter' && handleLogin()} />
       </label>
-      <button class="primary" onclick={handleLogin} disabled={loading}>
+      <button class="btn preset-filled-primary-500 w-full" onclick={handleLogin} disabled={loading}>
         {loading ? 'Signing in...' : 'Sign In'}
       </button>
     {/if}
   </div>
 </div>
-
-<style>
-  .login-page {
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #0f172a;
-  }
-  .login-card {
-    width: 320px;
-    padding: 2rem;
-    background: #1e293b;
-    border-radius: 12px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-  }
-  h1 { margin: 0 0 0.25rem; color: #f1f5f9; font-size: 1.75rem; }
-  .subtitle { margin: 0 0 1.5rem; color: #64748b; font-size: 0.875rem; }
-  label { display: block; color: #94a3b8; font-size: 0.8125rem; margin-bottom: 1rem; }
-  input {
-    width: 100%;
-    margin-top: 0.25rem;
-    padding: 0.5rem;
-    background: #0f172a;
-    color: #e2e8f0;
-    border: 1px solid #334155;
-    border-radius: 6px;
-    box-sizing: border-box;
-  }
-  input:focus { outline: none; border-color: #3b82f6; }
-  button {
-    width: 100%;
-    padding: 0.625rem;
-    background: #3b82f6;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 0.9375rem;
-  }
-  button:hover { background: #2563eb; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-</style>

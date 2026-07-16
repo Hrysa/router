@@ -3,6 +3,7 @@
   import { listInterfaces, createInterface, updateInterface, deleteInterface, applyConfig } from '../lib/api';
   import { notify } from '../lib/stores';
   import InterfaceSelect from '../lib/InterfaceSelect.svelte';
+  import { Dialog, Portal } from '@skeletonlabs/skeleton-svelte';
 
   // ── State ───────────────────────────────────────────────────────────────────
 
@@ -151,57 +152,58 @@
   }
 </script>
 
-<div class="interfaces-page">
-  <h2>Interfaces</h2>
+<div class="max-w-6xl">
+  <h2 class="h2 mb-6">Interfaces</h2>
 
   {#if loading}
-    <p class="loading">Loading...</p>
+    <div class="placeholder animate-pulse h-32"></div>
   {:else}
-    <div class="section-header">
-      <p class="count">{items.length} interface{items.length !== 1 ? 's' : ''}</p>
-      <button onclick={openAdd} class="btn-add">+ Add Interface</button>
+    <div class="flex items-center justify-between mb-4">
+      <p class="text-sm text-surface-500">{items.length} interface{items.length !== 1 ? 's' : ''}</p>
+      <button class="btn preset-filled-primary-500" onclick={openAdd}>+ Add Interface</button>
     </div>
 
     {#if items.length === 0}
-      <p class="empty">No interfaces configured</p>
+      <p class="text-surface-500 italic">No interfaces configured</p>
     {:else}
-      <div class="iface-list">
+      <div class="space-y-3">
         {#each items as iface}
-          <div class="iface-card">
-            <div class="iface-header">
-              <div class="iface-title">
-                <span class="iface-name">{iface.name}</span>
+          <div class="card p-4">
+            <div class="flex justify-between items-center mb-2">
+              <div class="flex items-baseline gap-3">
+                <span class="font-mono font-semibold">{iface.name}</span>
                 {#if iface.label}
-                  <span class="iface-label">{iface.label}</span>
+                  <span class="text-surface-500 text-sm">{iface.label}</span>
                 {/if}
-                <span class="iface-method">{iface.method}</span>
+                <span class="badge preset-tonal-surface text-xs">{iface.method}</span>
+                <span class="badge {inferRole(iface) === 'WAN' ? 'preset-filled-warning-500' : 'preset-filled-success-500'} text-xs">{inferRole(iface)}</span>
               </div>
-              <div class="iface-actions">
-                <button class="btn-sm" onclick={() => openEdit(iface)}>Edit</button>
-                <button class="btn-sm btn-danger" onclick={() => handleDelete(iface.name)}>Delete</button>
+              <div class="flex gap-2">
+                <button class="btn preset-tonal" onclick={() => openEdit(iface)}>Edit</button>
+                <button class="btn preset-filled-error-500" onclick={() => handleDelete(iface.name)}>Delete</button>
               </div>
             </div>
             {#if iface.static_config}
-              <div class="iface-details">
-                <span class="mono">{iface.static_config.address}</span>
+              <div class="flex items-center gap-2 text-sm text-surface-500 mt-1">
+                <span class="font-mono">{iface.static_config.address}</span>
                 {#if iface.static_config.gateway}
-                  <span class="detail-sep">→</span>
-                  <span class="mono">{iface.static_config.gateway}</span>
+                  <span>→</span>
+                  <span class="font-mono">{iface.static_config.gateway}</span>
                 {/if}
               </div>
             {/if}
             {#if iface.bridge_ports?.length > 0}
-              <div class="iface-details">
-                <span class="label">Bridge:</span>
-                <span class="mono">{iface.bridge_ports.join(', ')}</span>
+              <div class="flex items-center gap-2 text-sm text-surface-500 mt-1">
+                <span>Bridge:</span>
+                <span class="font-mono">{Array.isArray(iface.bridge_ports) ? iface.bridge_ports.join(', ') : (iface.bridge_ports || '')}</span>
               </div>
             {/if}
             {#if iface.vlan_id != null}
-              <div class="iface-details">
-                <span class="label">VLAN {iface.vlan_id}</span>
+              <div class="flex items-center gap-2 text-sm text-surface-500 mt-1">
+                <span>VLAN {iface.vlan_id}</span>
                 {#if iface.parent}
-                  <span class="detail-sep">on</span>
-                  <span class="mono">{iface.parent}</span>
+                  <span>on</span>
+                  <span class="font-mono">{iface.parent}</span>
                 {/if}
               </div>
             {/if}
@@ -210,164 +212,114 @@
       </div>
     {/if}
 
-    <div class="toolbar">
-      <button class="primary" onclick={handleApply} disabled={applying}>
+    <div class="flex gap-2 mt-6">
+      <button class="btn preset-filled-primary-500" onclick={handleApply} disabled={applying}>
         {applying ? 'Applying...' : 'Apply'}
       </button>
     </div>
   {/if}
 </div>
 
-<!-- ── Interface Modal ─────────────────────────────────────────────────────── -->
-{#if showModal}
-  <div class="modal-backdrop" onclick={() => showModal = false} role="dialog">
-    <div class="modal" onclick={(e) => e.stopPropagation()}>
-      <h3>{editing ? 'Edit Interface' : 'Add Interface'}</h3>
+<!-- Interface Modal -->
+<Dialog open={showModal} onOpenChange={(e) => showModal = e.open}>
+  <Portal>
+    <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/30" />
+    <Dialog.Positioner class="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <Dialog.Content class="card bg-white p-6 w-[580px] max-h-[85vh] overflow-y-auto shadow-xl border border-surface-200">
+        <Dialog.Title class="h3 mb-4">{editing ? 'Edit Interface' : 'Add Interface'}</Dialog.Title>
 
-      <div class="form-grid">
-        <label>
-          Interface Name
-          {#if editing}
-            <input value={form.name} disabled />
-          {:else if form.vlan_id}
-            <input bind:value={form.name} placeholder="e.g. vlan100" />
-          {:else}
-            <InterfaceSelect bind:value={form.name} placeholder="Select interface" exclude={usedNames} />
-          {/if}
-        </label>
-        <label>
-          Label
-          <input bind:value={form.label} placeholder="e.g. WAN, LAN, IoT" />
-        </label>
-        <label>
-          Method
-          <select bind:value={form.method}>
-            <option value="static">Static</option>
-            <option value="dhcp">DHCP</option>
-            <option value="pppoe">PPPoE</option>
-          </select>
-        </label>
-      </div>
-
-      {#if form.method === 'static'}
-        <h4>Static Configuration</h4>
-        <div class="form-grid">
-          <label>
-            Address (CIDR)
-            <input bind:value={form.static_config.address} placeholder="192.168.1.1/24" />
+        <div class="grid grid-cols-2 gap-3">
+          <label class="label">
+            <span class="label-text">Interface Name</span>
+            {#if editing}
+              <input class="input" value={form.name} disabled />
+            {:else if form.vlan_id}
+              <input class="input" bind:value={form.name} placeholder="e.g. vlan100" />
+            {:else}
+              <InterfaceSelect bind:value={form.name} placeholder="Select interface" exclude={usedNames} />
+            {/if}
           </label>
-          <label>
-            Gateway (set for WAN)
-            <input bind:value={form.static_config.gateway} placeholder="leave empty for LAN" />
+          <label class="label">
+            <span class="label-text">Label</span>
+            <input class="input" bind:value={form.label} placeholder="e.g. WAN, LAN, IoT" />
           </label>
-        </div>
-
-        <h4>Bridge Ports (optional)</h4>
-        <InterfaceSelect bind:value={form.bridge_ports} multiple placeholder="Select bridge ports" />
-      {:else if form.method === 'pppoe'}
-        <h4>PPPoE Configuration</h4>
-        <div class="form-grid">
-          <label>
-            Username
-            <input bind:value={form.pppoe.username} placeholder="ISP username" />
-          </label>
-          <label>
-            Password
-            <input type="password" bind:value={form.pppoe.password} placeholder="ISP password" />
-          </label>
-          <label>
-            MTU
-            <input type="number" bind:value={form.pppoe.mtu} />
-          </label>
-          <label>
-            MSS Clamp
-            <select bind:value={form.pppoe.mss_clamp}>
-              <option value={true}>Enabled</option>
-              <option value={false}>Disabled</option>
+          <label class="label">
+            <span class="label-text">Method</span>
+            <select class="input" bind:value={form.method}>
+              <option value="static">Static</option>
+              <option value="dhcp">DHCP</option>
+              <option value="pppoe">PPPoE</option>
             </select>
           </label>
         </div>
-      {:else if form.method === 'dhcp'}
-        <h4>DHCP Client Configuration</h4>
-        <div class="form-grid">
-          <label>
-            Hostname (optional)
-            <input bind:value={form.dhcp.hostname} placeholder="router" />
+
+        {#if form.method === 'static'}
+          <h4 class="h4 mt-4 mb-2">Static Configuration</h4>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="label">
+              <span class="label-text">Address (CIDR)</span>
+              <input class="input" bind:value={form.static_config.address} placeholder="192.168.1.1/24" />
+            </label>
+            <label class="label">
+              <span class="label-text">Gateway (set for WAN)</span>
+              <input class="input" bind:value={form.static_config.gateway} placeholder="leave empty for LAN" />
+            </label>
+          </div>
+
+          <h4 class="h4 mt-4 mb-2">Bridge Ports (optional)</h4>
+          <InterfaceSelect bind:value={form.bridge_ports} multiple placeholder="Select bridge ports" />
+        {:else if form.method === 'pppoe'}
+          <h4 class="h4 mt-4 mb-2">PPPoE Configuration</h4>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="label">
+              <span class="label-text">Username</span>
+              <input class="input" bind:value={form.pppoe.username} placeholder="ISP username" />
+            </label>
+            <label class="label">
+              <span class="label-text">Password</span>
+              <input class="input" type="password" bind:value={form.pppoe.password} placeholder="ISP password" />
+            </label>
+            <label class="label">
+              <span class="label-text">MTU</span>
+              <input class="input" type="number" bind:value={form.pppoe.mtu} />
+            </label>
+            <label class="label">
+              <span class="label-text">MSS Clamp</span>
+              <select class="input" bind:value={form.pppoe.mss_clamp}>
+                <option value={true}>Enabled</option>
+                <option value={false}>Disabled</option>
+              </select>
+            </label>
+          </div>
+        {:else if form.method === 'dhcp'}
+          <h4 class="h4 mt-4 mb-2">DHCP Client Configuration</h4>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="label">
+              <span class="label-text">Hostname (optional)</span>
+              <input class="input" bind:value={form.dhcp.hostname} placeholder="router" />
+            </label>
+          </div>
+        {/if}
+
+        <h4 class="h4 mt-4 mb-2">VLAN (optional)</h4>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="label">
+            <span class="label-text">VLAN ID</span>
+            <input class="input" type="number" bind:value={form.vlan_id} placeholder="leave empty if not VLAN" min="1" max="4094" />
+          </label>
+          <label class="label">
+            <span class="label-text">Parent Interface</span>
+            <InterfaceSelect bind:value={form.parent} placeholder="Select parent" />
           </label>
         </div>
-      {/if}
 
-      <h4>VLAN (optional)</h4>
-      <div class="form-grid">
-        <label>
-          VLAN ID
-          <input type="number" bind:value={form.vlan_id} placeholder="leave empty if not VLAN" min="1" max="4094" />
-        </label>
-        <label>
-          Parent Interface
-          <InterfaceSelect bind:value={form.parent} placeholder="Select parent" />
-        </label>
-      </div>
-
-      <div class="modal-actions">
-        <button onclick={() => showModal = false}>Cancel</button>
-        <button class="primary" onclick={handleSave}>
-          {editing ? 'Update' : 'Create'}
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-<style>
-  .interfaces-page { max-width: 1200px; }
-  h2 { margin: 0 0 1.5rem; color: #f1f5f9; }
-  h4 { margin: 1.25rem 0 0.5rem; color: #94a3b8; font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
-  .loading { color: #64748b; }
-  .count { color: #94a3b8; font-size: 0.875rem; margin: 0; }
-  .empty { color: #64748b; font-style: italic; }
-
-  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
-  .btn-add { padding: 0.375rem 0.75rem; background: #1e40af; color: #e2e8f0; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8125rem; }
-  .btn-add:hover { background: #2563eb; }
-
-  /* Card list */
-  .iface-list { display: flex; flex-direction: column; gap: 0.5rem; }
-  .iface-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 1rem; }
-  .iface-header { display: flex; justify-content: space-between; align-items: center; }
-  .iface-title { display: flex; align-items: baseline; gap: 0.625rem; }
-  .iface-name { color: #f1f5f9; font-weight: 600; font-size: 1rem; font-family: 'SF Mono', 'Fira Code', monospace; }
-  .iface-label { color: #94a3b8; font-size: 0.875rem; }
-  .iface-method { color: #64748b; font-size: 0.8125rem; font-family: 'SF Mono', 'Fira Code', monospace; }
-  .iface-actions { display: flex; gap: 0.375rem; }
-  .iface-details { display: flex; align-items: center; gap: 0.375rem; margin-top: 0.5rem; font-size: 0.8125rem; color: #94a3b8; }
-  .detail-sep { color: #64748b; }
-  .label { color: #64748b; }
-  .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8125rem; }
-
-  /* Toolbar */
-  .toolbar { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
-
-  /* Buttons */
-  button { padding: 0.5rem 1rem; background: #334155; color: #e2e8f0; border: none; border-radius: 6px; cursor: pointer; }
-  button:hover { background: #475569; }
-  button.primary { background: #3b82f6; }
-  button.primary:hover { background: #2563eb; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
-  .btn-danger { background: #991b1b; }
-  .btn-danger:hover { background: #dc2626; }
-
-  /* Form */
-  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
-  .form-grid label { display: flex; flex-direction: column; gap: 0.25rem; color: #94a3b8; font-size: 0.8125rem; }
-  select, input { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 0.5rem; font-size: 0.875rem; }
-  select:focus, input:focus { outline: none; border-color: #3b82f6; }
-  input:disabled { opacity: 0.6; cursor: not-allowed; }
-
-  /* Modal */
-  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; }
-  .modal { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; width: 580px; max-height: 85vh; overflow-y: auto; }
-  .modal h3 { margin-bottom: 1.25rem; color: #f1f5f9; }
-  .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.5rem; }
-</style>
+        <div class="flex justify-end gap-2 mt-6">
+          <Dialog.CloseTrigger class="btn preset-tonal">Cancel</Dialog.CloseTrigger>
+          <button class="btn preset-filled-primary-500" onclick={handleSave}>
+            {editing ? 'Update' : 'Create'}
+          </button>
+        </div>
+      </Dialog.Content>
+    </Dialog.Positioner>
+  </Portal>
+</Dialog>

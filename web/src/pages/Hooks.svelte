@@ -43,17 +43,18 @@
   }
 </script>
 
-<div class="hooks-page">
-  <h2>Hooks</h2>
-  <p class="subtitle">Shell commands executed at routerd startup. One command per line.</p>
+<div class="max-w-3xl">
+  <h2 class="h2 mb-1">Hooks</h2>
+  <p class="text-surface-500 text-sm mb-6">Shell commands executed at routerd startup. One command per line.</p>
 
   {#if loading}
-    <p class="loading">Loading...</p>
+    <div class="placeholder animate-pulse h-32"></div>
   {:else}
-    <section>
-      <h3>Before Start</h3>
-      <p class="section-desc">Runs after config validation, before services are applied.</p>
+    <section class="mb-6">
+      <h3 class="h4 mb-1">Before Start</h3>
+      <p class="text-surface-500 text-sm mb-2">Runs after config validation, before services are applied.</p>
       <textarea
+        class="textarea font-mono text-sm"
         bind:value={beforeStart}
         rows="6"
         placeholder='echo "applying routerd config"'
@@ -61,10 +62,11 @@
       ></textarea>
     </section>
 
-    <section>
-      <h3>After Start</h3>
-      <p class="section-desc">Runs after services are applied and tproxy routing is configured.</p>
+    <section class="mb-6">
+      <h3 class="h4 mb-1">After Start</h3>
+      <p class="text-surface-500 text-sm mb-2">Runs after services are applied and tproxy routing is configured.</p>
       <textarea
+        class="textarea font-mono text-sm"
         bind:value={afterStart}
         rows="6"
         placeholder="modprobe xt_TPROXY"
@@ -72,43 +74,10 @@
       ></textarea>
     </section>
 
-    <div class="toolbar">
-      <button class="primary" onclick={saveHooks} disabled={saving}>
+    <div class="flex gap-2">
+      <button class="btn preset-filled-primary-500" onclick={saveHooks} disabled={saving}>
         {saving ? 'Saving...' : 'Save'}
       </button>
     </div>
   {/if}
 </div>
-
-<style>
-  .hooks-page { max-width: 800px; }
-  h2 { margin: 0 0 0.25rem; color: #f1f5f9; }
-  .subtitle { color: #64748b; font-size: 0.875rem; margin: 0 0 1.5rem; }
-  .loading { color: #64748b; }
-
-  section { margin-bottom: 1.5rem; }
-  h3 { margin: 0 0 0.25rem; color: #94a3b8; font-size: 1rem; }
-  .section-desc { color: #64748b; font-size: 0.8125rem; margin: 0 0 0.5rem; }
-
-  textarea {
-    width: 100%;
-    background: #0f172a;
-    color: #e2e8f0;
-    border: 1px solid #334155;
-    border-radius: 6px;
-    padding: 0.75rem;
-    font-size: 0.875rem;
-    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    resize: vertical;
-    box-sizing: border-box;
-  }
-  textarea:focus { outline: none; border-color: #3b82f6; }
-
-  .toolbar { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
-
-  button { padding: 0.5rem 1rem; background: #334155; color: #e2e8f0; border: none; border-radius: 6px; cursor: pointer; }
-  button:hover { background: #475569; }
-  button.primary { background: #3b82f6; }
-  button.primary:hover { background: #2563eb; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-</style>

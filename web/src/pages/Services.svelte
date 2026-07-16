@@ -53,37 +53,37 @@
   }
 </script>
 
-<div class="services-page">
-  <h2>Services</h2>
+<div class="max-w-6xl">
+  <h2 class="h2 mb-6">Services</h2>
 
-  <button onclick={loadServices}>Refresh</button>
+  <button class="btn preset-tonal mb-4" onclick={loadServices}>Refresh</button>
 
   {#if loading}
-    <p>Loading...</p>
+    <p class="text-surface-400">Loading...</p>
   {:else}
-    <div class="service-grid">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {#each services as svc}
-        <div class="service-card">
-          <div class="service-header">
-            <span class="service-name">{svc.display_name}</span>
-            <span class="status" class:active={svc.active} class:inactive={!svc.active}>
+        <div class="card p-4">
+          <div class="flex justify-between items-center mb-3">
+            <span class="font-semibold text-lg">{svc.display_name}</span>
+            <span class="badge {svc.active ? 'preset-filled-success-500' : 'preset-tonal-surface'}">
               {svc.active ? '● Running' : '○ Stopped'}
             </span>
           </div>
 
-          <div class="service-info">
+          <div class="text-sm text-surface-400 mb-4 space-y-1">
             <div>Service: {svc.name}</div>
             {#if svc.pid}
               <div>PID: {svc.pid}</div>
             {/if}
           </div>
 
-          <div class="service-actions">
+          <div class="flex gap-2">
             {#if svc.active}
-              <button class="stop" onclick={() => handleStop(svc.name)}>Stop</button>
-              <button class="restart" onclick={() => handleRestart(svc.name)}>Restart</button>
+              <button class="btn preset-filled-error-500 flex-1" onclick={() => handleStop(svc.name)}>Stop</button>
+              <button class="btn preset-filled-warning-500 flex-1" onclick={() => handleRestart(svc.name)}>Restart</button>
             {:else}
-              <button class="start" onclick={() => handleStart(svc.name)}>Start</button>
+              <button class="btn preset-filled-success-500 flex-1" onclick={() => handleStart(svc.name)}>Start</button>
             {/if}
           </div>
         </div>
@@ -91,90 +91,3 @@
     </div>
   {/if}
 </div>
-
-<style>
-  .services-page {
-    max-width: 1200px;
-  }
-
-  h2 {
-    margin: 0 0 1.5rem;
-    color: #f1f5f9;
-  }
-
-  button {
-    padding: 0.5rem 1rem;
-    background: #334155;
-    color: #e2e8f0;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    margin-bottom: 1rem;
-  }
-
-  .service-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 1rem;
-  }
-
-  .service-card {
-    background: #1e293b;
-    border-radius: 8px;
-    padding: 1rem;
-  }
-
-  .service-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 0.75rem;
-  }
-
-  .service-name {
-    font-weight: 600;
-    font-size: 1.125rem;
-  }
-
-  .status {
-    font-size: 0.875rem;
-    padding: 0.25rem 0.5rem;
-    border-radius: 4px;
-  }
-
-  .status.active {
-    background: #059669;
-    color: white;
-  }
-
-  .status.inactive {
-    background: #475569;
-    color: #94a3b8;
-  }
-
-  .service-info {
-    color: #94a3b8;
-    font-size: 0.875rem;
-    margin-bottom: 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  .service-actions {
-    display: flex;
-    gap: 0.5rem;
-  }
-
-  .service-actions button {
-    flex: 1;
-    margin: 0;
-  }
-
-  .start { background: #059669; }
-  .start:hover { background: #047857; }
-  .stop { background: #dc2626; }
-  .stop:hover { background: #b91c1c; }
-  .restart { background: #d97706; }
-  .restart:hover { background: #b45309; }
-</style>

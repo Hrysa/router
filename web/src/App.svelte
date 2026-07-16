@@ -9,8 +9,8 @@
   import Hooks from './pages/Hooks.svelte';
   import SingBox from './pages/SingBox.svelte';
   import Login from './pages/Login.svelte';
+  import { Navigation } from '@skeletonlabs/skeleton-svelte';
 
-  let sidebarOpen = $state(true);
   let currentPath = $state(window.location.hash.slice(1) || '/');
 
   function navigate(path: string) {
@@ -35,39 +35,49 @@
     { path: '/monitoring', label: 'Monitoring', icon: '📈' },
     { path: '/hooks', label: 'Hooks', icon: '⚡' },
   ];
+
+  function notifColor(type: string) {
+    switch (type) {
+      case 'success': return 'preset-filled-success-500';
+      case 'error': return 'preset-filled-error-500';
+      case 'warning': return 'preset-filled-warning-500';
+      case 'info': return 'preset-filled-primary-500';
+      default: return 'preset-tonal-surface';
+    }
+  }
 </script>
 
 {#if $isAuthenticated}
-  <div class="app">
-    <aside class="sidebar" class:collapsed={!sidebarOpen}>
-      <div class="sidebar-header">
-        <h1>routerd</h1>
-        <button class="toggle-btn" onclick={() => sidebarOpen = !sidebarOpen}>
-          {sidebarOpen ? '←' : '→'}
-        </button>
-      </div>
+  <div class="grid grid-cols-[auto_1fr] min-h-screen">
+    <!-- Sidebar -->
+    <Navigation layout="sidebar" class="grid grid-rows-[auto_1fr_auto] gap-4 p-4">
+      <Navigation.Header>
+        <a href="#/" class="text-xl font-bold text-primary-500">routerd</a>
+      </Navigation.Header>
+      <Navigation.Content>
+        <Navigation.Group>
+          <Navigation.Menu>
+            {#each navItems as item}
+              <Navigation.TriggerAnchor
+                href="#{item.path}"
+                class="w-full justify-start {currentPath === item.path ? 'preset-filled-primary-500' : ''}"
+              >
+                <span>{item.icon}</span>
+                <Navigation.TriggerText>{item.label}</Navigation.TriggerText>
+              </Navigation.TriggerAnchor>
+            {/each}
+          </Navigation.Menu>
+        </Navigation.Group>
+      </Navigation.Content>
+    </Navigation>
 
-      <nav>
-        {#each navItems as item}
-          <button
-            class="nav-link"
-            class:active={currentPath === item.path}
-            onclick={() => navigate(item.path)}
-          >
-            <span class="icon">{item.icon}</span>
-            {#if sidebarOpen}
-              <span class="label">{item.label}</span>
-            {/if}
-          </button>
-        {/each}
-      </nav>
-    </aside>
-
-    <main class="content">
-      <div class="notifications">
+    <!-- Main content -->
+    <main class="p-6 overflow-y-auto">
+      <!-- Notifications -->
+      <div class="fixed top-4 right-4 z-50 flex flex-col gap-2">
         {#each $notifications as notif (notif.id)}
-          <div class="notification {notif.type}">
-            {notif.message}
+          <div class="alert {notifColor(notif.type)} shadow-lg">
+            <span>{notif.message}</span>
           </div>
         {/each}
       </div>
@@ -96,130 +106,3 @@
 {:else}
   <Login onLogin={markAuthenticated} />
 {/if}
-
-<style>
-  :global(body) {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: #0f172a;
-    color: #e2e8f0;
-  }
-
-  .app {
-    display: flex;
-    min-height: 100vh;
-  }
-
-  .sidebar {
-    width: 240px;
-    background: #1e293b;
-    padding: 1.5rem 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
-    transition: width 0.2s;
-  }
-
-  .sidebar.collapsed {
-    width: 64px;
-    padding: 1.5rem 0.75rem;
-  }
-
-  .sidebar-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .sidebar-header h1 {
-    font-size: 1.25rem;
-    color: #60a5fa;
-    margin: 0;
-  }
-
-  .collapsed .sidebar-header h1 {
-    display: none;
-  }
-
-  .toggle-btn {
-    background: #334155;
-    border: none;
-    color: #94a3b8;
-    padding: 0.25rem 0.5rem;
-    cursor: pointer;
-    border-radius: 4px;
-  }
-
-  nav {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .nav-link {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    color: #94a3b8;
-    background: none;
-    border: none;
-    padding: 0.75rem 1rem;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 1rem;
-    text-align: left;
-    width: 100%;
-    transition: background 0.2s;
-  }
-
-  .nav-link:hover {
-    background: #334155;
-    color: #e2e8f0;
-  }
-
-  .nav-link.active {
-    background: #3b82f6;
-    color: white;
-  }
-
-  .collapsed .nav-link {
-    justify-content: center;
-    padding: 0.75rem;
-  }
-
-  .icon {
-    font-size: 1.25rem;
-  }
-
-  .content {
-    flex: 1;
-    padding: 2rem 2.5rem;
-    overflow-y: auto;
-  }
-
-  .notifications {
-    position: fixed;
-    top: 1rem;
-    right: 1rem;
-    z-index: 1000;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .notification {
-    padding: 0.75rem 1rem;
-    border-radius: 6px;
-    animation: slideIn 0.3s ease;
-  }
-
-  .notification.success { background: #059669; }
-  .notification.error { background: #dc2626; }
-  .notification.warning { background: #d97706; }
-  .notification.info { background: #2563eb; }
-
-  @keyframes slideIn {
-    from { transform: translateX(100%); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
-  }
-</style>

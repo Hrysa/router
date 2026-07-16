@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { getConfig, patchConfig, applyConfig, listDhcpLeases, addDhcpLease, deleteDhcpLease, getLeases } from '../lib/api';
   import { notify } from '../lib/stores';
+  import { Tabs, Dialog, Portal, Switch } from '@skeletonlabs/skeleton-svelte';
 
   // ── State ───────────────────────────────────────────────────────────────────
 
@@ -13,7 +14,7 @@
   let applying = $state(false);
 
   // Tab state
-  let activeTab = $state<'settings' | 'static' | 'leases'>('settings');
+  let activeTab = $state('settings');
 
   // Pool modal state
   let showPoolModal = $state(false);
@@ -55,7 +56,7 @@
       range_end: pool.range?.end || '',
       lease_time: pool.lease_time || '12h',
       domain: pool.domain || 'lan.local',
-      dns_servers: (pool.dns_servers || []).join(', '),
+      dns_servers: Array.isArray(pool.dns_servers) ? pool.dns_servers.join(', ') : (pool.dns_servers || ''),
       gateway: pool.gateway || '',
       enabled: pool.enabled ?? true,
     };
@@ -215,287 +216,224 @@
   }
 </script>
 
-<div class="dhcp-page">
-  <h2>DHCP</h2>
+<div class="max-w-6xl">
+  <h2 class="h2 mb-6">DHCP</h2>
 
   {#if loading}
-    <p class="loading">Loading...</p>
+    <p class="text-surface-400">Loading...</p>
   {:else if dhcp}
-    <!-- ── Sub-tabs ───────────────────────────────────────────────────────── -->
-    <div class="tabs">
-      <button class="tab" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'}>Settings</button>
-      <button class="tab" class:active={activeTab === 'static'} onclick={() => activeTab = 'static'}>Static Leases</button>
-      <button class="tab" class:active={activeTab === 'leases'} onclick={() => activeTab = 'leases'}>Leases</button>
-    </div>
+    <Tabs value={activeTab} onValueChange={(e) => activeTab = e.value}>
+      <Tabs.List>
+        <Tabs.Trigger value="settings">Settings</Tabs.Trigger>
+        <Tabs.Trigger value="static">Static Leases</Tabs.Trigger>
+        <Tabs.Trigger value="leases">Leases</Tabs.Trigger>
+      </Tabs.List>
 
-    {#if activeTab === 'settings'}
-      <!-- ── DHCP Pools ───────────────────────────────────────────────────── -->
-      <section>
-        <div class="section-header">
-          <h3>Subnet Pools</h3>
-          <button onclick={openAddPool} class="btn-add">+ Add Pool</button>
-        </div>
-        {#if dhcp.pools.length === 0}
-          <p class="empty">No DHCP pools configured</p>
-        {:else}
-          {#each dhcp.pools as pool, idx}
-            <div class="pool-card" class:disabled={pool.enabled === false}>
-              <div class="pool-header">
-                <div class="pool-title">
-                  <span class="pool-name">{pool.name}</span>
-                  <span class="pool-subnet">{pool.subnet}</span>
+      <Tabs.Content value="settings">
+        <!-- DHCP Pools -->
+        <section class="mb-6">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="h4">Subnet Pools</h3>
+            <button class="btn preset-filled-primary-500 btn-sm" onclick={openAddPool}>+ Add Pool</button>
+          </div>
+          {#if dhcp.pools.length === 0}
+            <p class="text-surface-500 italic">No DHCP pools configured</p>
+          {:else}
+            <div class="space-y-3">
+              {#each dhcp.pools as pool, idx}
+                <div class="card p-4 {pool.enabled === false ? 'opacity-50' : ''}">
+                  <div class="flex justify-between items-center mb-3">
+                    <div class="flex items-baseline gap-3">
+                      <span class="font-semibold">{pool.name}</span>
+                      <span class="font-mono text-sm text-surface-400">{pool.subnet}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <Switch checked={pool.enabled} onCheckedChange={() => togglePoolEnabled(idx)} />
+                      <button class="btn preset-tonal btn-sm" onclick={() => openEditPool(idx)}>Edit</button>
+                      <button class="btn preset-filled-error-500 btn-sm" onclick={() => handleDeletePool(idx)}>Delete</button>
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+                    <div><span class="text-surface-500">Range</span> <span class="font-mono">{pool.range.start} – {pool.range.end}</span></div>
+                    <div><span class="text-surface-500">Lease</span> {pool.lease_time}</div>
+                    <div><span class="text-surface-500">Domain</span> {pool.domain}</div>
+                    <div><span class="text-surface-500">DNS</span> <span class="font-mono">{Array.isArray(pool.dns_servers) ? pool.dns_servers.join(', ') : (pool.dns_servers || '')}</span></div>
+                    {#if pool.gateway}
+                      <div><span class="text-surface-500">Gateway</span> <span class="font-mono">{pool.gateway}</span></div>
+                    {/if}
+                  </div>
                 </div>
-                <div class="pool-actions">
-                  <label class="switch">
-                    <input type="checkbox" checked={pool.enabled} onchange={() => togglePoolEnabled(idx)} />
-                    <span class="slider"></span>
-                  </label>
-                  <button class="btn-sm" onclick={() => openEditPool(idx)}>Edit</button>
-                  <button class="btn-sm btn-danger" onclick={() => handleDeletePool(idx)}>Delete</button>
-                </div>
-              </div>
-              <div class="pool-details">
-                <div class="detail"><span class="label">Range</span> <span class="mono">{pool.range.start} – {pool.range.end}</span></div>
-                <div class="detail"><span class="label">Lease</span> <span>{pool.lease_time}</span></div>
-                <div class="detail"><span class="label">Domain</span> <span>{pool.domain}</span></div>
-                <div class="detail"><span class="label">DNS</span> <span class="mono">{(pool.dns_servers || []).join(', ')}</span></div>
-                {#if pool.gateway}
-                  <div class="detail"><span class="label">Gateway</span> <span class="mono">{pool.gateway}</span></div>
-                {/if}
-              </div>
+              {/each}
             </div>
-          {/each}
-        {/if}
-      </section>
-    {:else if activeTab === 'static'}
-      <!-- ── Static Leases ────────────────────────────────────────────────── -->
-      <section>
-        <div class="section-header">
-          <h3>Static Leases</h3>
-          <button onclick={openAddLease} class="btn-add">+ Add Lease</button>
-        </div>
-        {#if staticLeases.length === 0}
-          <p class="empty">No static leases configured</p>
-        {:else}
-          <table>
-            <thead>
-              <tr>
-                <th>MAC Address</th>
-                <th>IP Address</th>
-                <th>Hostname</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each staticLeases as lease}
-                <tr>
-                  <td class="mono">{lease.mac}</td>
-                  <td class="mono">{lease.ip}</td>
-                  <td>{lease.hostname || '-'}</td>
-                  <td class="actions">
-                    <button class="btn-sm btn-danger" onclick={() => handleDeleteLease(lease.mac)}>Delete</button>
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
-      </section>
-    {:else}
-      <!-- ── Active Leases ─────────────────────────────────────────────────── -->
-      <section>
-        <div class="section-header">
-          <h3>Active Leases</h3>
-          <button class="btn-sm" onclick={reloadActiveLeases}>Refresh</button>
-        </div>
-        {#if activeLeases.length === 0}
-          <p class="empty">No active leases</p>
-        {:else}
-          <table>
-            <thead>
-              <tr>
-                <th>IP Address</th>
-                <th>MAC Address</th>
-                <th>Hostname</th>
-                <th>Expires</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each activeLeases as lease}
-                <tr>
-                  <td class="mono">{lease.address}</td>
-                  <td class="mono">{lease.mac}</td>
-                  <td>{lease.hostname || '-'}</td>
-                  <td class="mono">{lease.expires || '-'}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
-      </section>
-    {/if}
+          {/if}
+        </section>
 
-    <!-- ── Actions (only on settings tab) ──────────────────────────────────── -->
-    {#if activeTab === 'settings'}
-      <div class="toolbar">
-        <button class="primary" onclick={handleApply} disabled={applying}>
-          {applying ? 'Applying...' : 'Apply'}
-        </button>
-      </div>
-    {/if}
+        <div class="flex gap-2 mt-6">
+          <button class="btn preset-filled-primary-500" onclick={handleApply} disabled={applying}>
+            {applying ? 'Applying...' : 'Apply'}
+          </button>
+        </div>
+      </Tabs.Content>
+
+      <Tabs.Content value="static">
+        <!-- Static Leases -->
+        <section class="mb-6">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="h4">Static Leases</h3>
+            <button class="btn preset-filled-primary-500 btn-sm" onclick={openAddLease}>+ Add Lease</button>
+          </div>
+          {#if staticLeases.length === 0}
+            <p class="text-surface-500 italic">No static leases configured</p>
+          {:else}
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>MAC Address</th>
+                    <th>IP Address</th>
+                    <th>Hostname</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each staticLeases as lease}
+                    <tr>
+                      <td class="font-mono text-sm">{lease.mac}</td>
+                      <td class="font-mono text-sm">{lease.ip}</td>
+                      <td>{lease.hostname || '-'}</td>
+                      <td class="text-right">
+                        <button class="btn preset-filled-error-500 btn-sm" onclick={() => handleDeleteLease(lease.mac)}>Delete</button>
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        </section>
+      </Tabs.Content>
+
+      <Tabs.Content value="leases">
+        <!-- Active Leases -->
+        <section class="mb-6">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="h4">Active Leases</h3>
+            <button class="btn preset-tonal btn-sm" onclick={reloadActiveLeases}>Refresh</button>
+          </div>
+          {#if activeLeases.length === 0}
+            <p class="text-surface-500 italic">No active leases</p>
+          {:else}
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>IP Address</th>
+                    <th>MAC Address</th>
+                    <th>Hostname</th>
+                    <th>Expires</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each activeLeases as lease}
+                    <tr>
+                      <td class="font-mono text-sm">{lease.address}</td>
+                      <td class="font-mono text-sm">{lease.mac}</td>
+                      <td>{lease.hostname || '-'}</td>
+                      <td class="font-mono text-sm">{lease.expires || '-'}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        </section>
+      </Tabs.Content>
+    </Tabs>
   {/if}
 </div>
 
-<!-- ── Pool Modal ─────────────────────────────────────────────────────────── -->
-{#if showPoolModal}
-  <div class="modal-backdrop" onclick={() => showPoolModal = false}>
-    <div class="modal" onclick={(e) => e.stopPropagation()}>
-      <h3>{editingPoolIdx !== null ? 'Edit Pool' : 'Add Pool'}</h3>
-      <div class="form-grid">
-        <label>
-          Name
-          <input bind:value={poolForm.name} placeholder="e.g. main, guest" disabled={editingPoolIdx !== null} />
-        </label>
-        <label>
-          Subnet (CIDR)
-          <input bind:value={poolForm.subnet} placeholder="192.168.1.0/24" />
-        </label>
-        <label>
-          Range Start
-          <input bind:value={poolForm.range_start} placeholder="192.168.1.100" />
-        </label>
-        <label>
-          Range End
-          <input bind:value={poolForm.range_end} placeholder="192.168.1.250" />
-        </label>
-        <label>
-          Lease Time
-          <input bind:value={poolForm.lease_time} placeholder="12h" />
-        </label>
-        <label>
-          Domain
-          <input bind:value={poolForm.domain} placeholder="lan.local" />
-        </label>
-        <label>
-          DNS Servers
-          <input bind:value={poolForm.dns_servers} placeholder="comma separated" />
-        </label>
-        <label>
-          Gateway (optional)
-          <input bind:value={poolForm.gateway} placeholder="auto from LAN IP" />
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" bind:checked={poolForm.enabled} />
-          Enabled
-        </label>
-      </div>
-      <div class="modal-actions">
-        <button onclick={() => showPoolModal = false}>Cancel</button>
-        <button class="primary" onclick={handleSavePool}>
-          {editingPoolIdx !== null ? 'Update' : 'Add'}
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
+<!-- Pool Modal -->
+<Dialog open={showPoolModal} onOpenChange={(e) => showPoolModal = e.open}>
+  <Portal>
+    <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/30" />
+    <Dialog.Positioner class="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <Dialog.Content class="card bg-white p-6 w-[520px] max-h-[85vh] overflow-y-auto shadow-xl border border-surface-200">
+        <Dialog.Title class="h3 mb-4">{editingPoolIdx !== null ? 'Edit Pool' : 'Add Pool'}</Dialog.Title>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="label">
+            <span class="label-text">Name</span>
+            <input class="input" bind:value={poolForm.name} placeholder="e.g. main, guest" disabled={editingPoolIdx !== null} />
+          </label>
+          <label class="label">
+            <span class="label-text">Subnet (CIDR)</span>
+            <input class="input" bind:value={poolForm.subnet} placeholder="192.168.1.0/24" />
+          </label>
+          <label class="label">
+            <span class="label-text">Range Start</span>
+            <input class="input" bind:value={poolForm.range_start} placeholder="192.168.1.100" />
+          </label>
+          <label class="label">
+            <span class="label-text">Range End</span>
+            <input class="input" bind:value={poolForm.range_end} placeholder="192.168.1.250" />
+          </label>
+          <label class="label">
+            <span class="label-text">Lease Time</span>
+            <input class="input" bind:value={poolForm.lease_time} placeholder="12h" />
+          </label>
+          <label class="label">
+            <span class="label-text">Domain</span>
+            <input class="input" bind:value={poolForm.domain} placeholder="lan.local" />
+          </label>
+          <label class="label">
+            <span class="label-text">DNS Servers</span>
+            <input class="input" bind:value={poolForm.dns_servers} placeholder="comma separated" />
+          </label>
+          <label class="label">
+            <span class="label-text">Gateway (optional)</span>
+            <input class="input" bind:value={poolForm.gateway} placeholder="auto from LAN IP" />
+          </label>
+          <label class="flex items-center gap-2 mt-4 col-span-2">
+            <Switch checked={poolForm.enabled} onCheckedChange={(e) => poolForm.enabled = e.checked} />
+            <span>Enabled</span>
+          </label>
+        </div>
+        <div class="flex justify-end gap-2 mt-6">
+          <Dialog.CloseTrigger class="btn preset-tonal">Cancel</Dialog.CloseTrigger>
+          <button class="btn preset-filled-primary-500" onclick={handleSavePool}>
+            {editingPoolIdx !== null ? 'Update' : 'Add'}
+          </button>
+        </div>
+      </Dialog.Content>
+    </Dialog.Positioner>
+  </Portal>
+</Dialog>
 
-<!-- ── Lease Modal ─────────────────────────────────────────────────────────── -->
-{#if showLeaseModal}
-  <div class="modal-backdrop" onclick={() => showLeaseModal = false}>
-    <div class="modal" onclick={(e) => e.stopPropagation()}>
-      <h3>Add Static Lease</h3>
-      <div class="form-grid">
-        <label>
-          MAC Address
-          <input bind:value={leaseForm.mac} placeholder="aa:bb:cc:dd:ee:ff" />
-        </label>
-        <label>
-          IP Address
-          <input bind:value={leaseForm.ip} placeholder="192.168.1.50" />
-        </label>
-        <label>
-          Hostname
-          <input bind:value={leaseForm.hostname} placeholder="my-device (optional)" />
-        </label>
-      </div>
-      <div class="modal-actions">
-        <button onclick={() => showLeaseModal = false}>Cancel</button>
-        <button class="primary" onclick={handleSaveLease}>Add</button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-<style>
-  .dhcp-page { max-width: 1200px; }
-  h2 { margin: 0 0 1.5rem; color: #f1f5f9; }
-  h3 { margin: 1.5rem 0 0.75rem; color: #94a3b8; font-size: 1rem; }
-  .loading { color: #64748b; }
-
-  /* Section header */
-  /* Tabs */
-  .tabs { display: flex; gap: 0; border-bottom: 1px solid #334155; margin-bottom: 1.5rem; }
-  .tab { padding: 0.625rem 1.25rem; background: none; color: #94a3b8; border: none; border-bottom: 2px solid transparent; cursor: pointer; font-size: 0.875rem; font-weight: 500; transition: color 0.2s, border-color 0.2s; }
-  .tab:hover { color: #e2e8f0; }
-  .tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
-
-  .section-header { display: flex; align-items: center; justify-content: space-between; margin: 1.5rem 0 0.75rem; }
-  .section-header h3 { margin: 0; }
-  .btn-add { padding: 0.375rem 0.75rem; background: #1e40af; color: #e2e8f0; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8125rem; }
-  .btn-add:hover { background: #2563eb; }
-
-  /* Toolbar */
-  .toolbar { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
-
-  /* Buttons */
-  button { padding: 0.5rem 1rem; background: #334155; color: #e2e8f0; border: none; border-radius: 6px; cursor: pointer; }
-  button:hover { background: #475569; }
-  button.primary { background: #3b82f6; }
-  button.primary:hover { background: #2563eb; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
-  .btn-danger { background: #991b1b; }
-  .btn-danger:hover { background: #dc2626; }
-
-  /* Form */
-  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
-  .form-grid label { display: flex; flex-direction: column; gap: 0.25rem; color: #94a3b8; font-size: 0.8125rem; }
-  .checkbox-label { flex-direction: row !important; align-items: center; gap: 0.5rem !important; padding-top: 1.25rem; }
-  .checkbox-label input { width: auto; }
-  select, input { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 0.5rem; font-size: 0.875rem; }
-  select:focus, input:focus { outline: none; border-color: #3b82f6; }
-
-  /* Pool card */
-  .pool-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; }
-  .pool-card.disabled { opacity: 0.5; }
-  .pool-header { display: flex; justify-content: space-between; align-items: center; }
-  .pool-title { display: flex; align-items: baseline; gap: 0.75rem; }
-  .pool-name { color: #f1f5f9; font-weight: 600; font-size: 1rem; }
-  .pool-subnet { color: #94a3b8; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8125rem; }
-  .pool-actions { display: flex; align-items: center; gap: 0.5rem; }
-  .pool-details { display: flex; flex-wrap: wrap; gap: 1.5rem; margin-top: 0.75rem; }
-  .detail { display: flex; gap: 0.375rem; font-size: 0.8125rem; }
-  .detail .label { color: #64748b; }
-  .mono { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 0.8125rem; }
-
-  /* Table */
-  table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; }
-  th, td { padding: 0.625rem 1rem; text-align: left; border-bottom: 1px solid #334155; }
-  th { background: #334155; color: #94a3b8; font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
-  .actions { text-align: right; }
-  .empty { color: #64748b; font-style: italic; }
-
-  /* Toggle switch */
-  .switch { position: relative; display: inline-block; width: 2rem; height: 1.125rem; cursor: pointer; }
-  .switch input { opacity: 0; width: 0; height: 0; }
-  .slider { position: absolute; inset: 0; background: #475569; border-radius: 1.125rem; transition: background 0.2s; }
-  .slider::before { content: ''; position: absolute; width: 0.875rem; height: 0.875rem; left: 0.125rem; bottom: 0.125rem; background: #e2e8f0; border-radius: 50%; transition: transform 0.2s; }
-  .switch input:checked + .slider { background: #3b82f6; }
-  .switch input:checked + .slider::before { transform: translateX(0.875rem); }
-
-  /* Modal */
-  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; }
-  .modal { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; width: 520px; max-height: 85vh; overflow-y: auto; }
-  .modal h3 { margin-bottom: 1rem; color: #f1f5f9; }
-  .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem; }
-</style>
+<!-- Lease Modal -->
+<Dialog open={showLeaseModal} onOpenChange={(e) => showLeaseModal = e.open}>
+  <Portal>
+    <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/30" />
+    <Dialog.Positioner class="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <Dialog.Content class="card bg-white p-6 w-[400px] shadow-xl border border-surface-200">
+        <Dialog.Title class="h3 mb-4">Add Static Lease</Dialog.Title>
+        <div class="grid grid-cols-1 gap-3">
+          <label class="label">
+            <span class="label-text">MAC Address</span>
+            <input class="input" bind:value={leaseForm.mac} placeholder="aa:bb:cc:dd:ee:ff" />
+          </label>
+          <label class="label">
+            <span class="label-text">IP Address</span>
+            <input class="input" bind:value={leaseForm.ip} placeholder="192.168.1.50" />
+          </label>
+          <label class="label">
+            <span class="label-text">Hostname</span>
+            <input class="input" bind:value={leaseForm.hostname} placeholder="my-device (optional)" />
+          </label>
+        </div>
+        <div class="flex justify-end gap-2 mt-6">
+          <Dialog.CloseTrigger class="btn preset-tonal">Cancel</Dialog.CloseTrigger>
+          <button class="btn preset-filled-primary-500" onclick={handleSaveLease}>Add</button>
+        </div>
+      </Dialog.Content>
+    </Dialog.Positioner>
+  </Portal>
+</Dialog>

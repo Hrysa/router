@@ -1,17 +1,62 @@
-/* Reset */
-*, *::before, *::after {
-  box-sizing: border-box;
+@import 'tailwindcss';
+@import '@fontsource/inter';
+
+@import '@skeletonlabs/skeleton';
+@import '@skeletonlabs/skeleton-svelte';
+@import '@skeletonlabs/skeleton/themes/hamlindigo';
+
+/* Custom contrast overrides for hamlindigo */
+[data-theme='hamlindigo'] {
+  /* Tab active state */
+  --tab-active-color: var(--color-primary-500);
+  --tab-active-border: var(--color-primary-500);
+  --tab-inactive-color: var(--color-surface-400);
+
+  /* Dialog outline */
+  --dialog-border-width: 2px;
+  --dialog-border-color: var(--color-surface-200);
+
+  /* Card border */
+  --card-border-width: 1px;
+  --card-border-color: var(--color-surface-200);
+
+  /* Input border */
+  --input-border-width: 1px;
+  --input-border-color: var(--color-surface-300);
+  --input-border-focus: var(--color-primary-500);
+
+  /* Badge contrast */
+  --badge-font-weight: 600;
+
+  /* Button states */
+  --button-primary-hover: var(--color-primary-600);
+  --button-tonal-bg: var(--color-surface-100);
+  --button-tonal-hover: var(--color-surface-200);
+
+  /* Surface hierarchy */
+  --surface-50: #ffffff;
+  --surface-100: #f8fafc;
+  --surface-200: #e2e8f0;
+  --surface-300: #cbd5e1;
+  --surface-400: #94a3b8;
+  --surface-500: #64748b;
+  --surface-600: #475569;
+  --surface-700: #334155;
+  --surface-800: #1e293b;
+  --surface-900: #0f172a;
 }
 
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #0f172a;
-  color: #e2e8f0;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+/* Additional contrast utilities */
+@layer utilities {
+  .border-contrast {
+    border-color: var(--color-surface-300);
+  }
+  .shadow-contrast {
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  }
 }
 
-#app {
-  min-height: 100vh;
+/* Global card border */
+[data-theme='hamlindigo'] .card {
+  border: 1px solid var(--color-surface-200);
 }

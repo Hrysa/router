@@ -26,123 +26,77 @@
   });
 </script>
 
-<div class="dashboard">
-  <h2>Dashboard</h2>
+<div class="max-w-6xl">
+  <h2 class="h2 mb-6">Dashboard</h2>
 
   {#if loading}
-    <p>Loading...</p>
+    <div class="placeholder animate-pulse h-32"></div>
   {:else}
-    <div class="cards">
-      <div class="card">
-        <div class="card-header">System</div>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <!-- System Card -->
+      <div class="card p-4">
+        <header class="card-header">
+          <h3 class="h4">System</h3>
+        </header>
         <div class="card-body">
-          <div class="stat">
-            <span class="label">Hostname</span>
-            <span class="value">{status?.hostname || '-'}</span>
-          </div>
-          <div class="stat">
-            <span class="label">Uptime</span>
-            <span class="value">{system?.uptime_human || '-'}</span>
-          </div>
+          <dl class="divide-y divide-surface-200">
+            <div class="flex justify-between py-2">
+              <dt class="text-surface-500">Hostname</dt>
+              <dd class="font-medium">{status?.hostname || '-'}</dd>
+            </div>
+            <div class="flex justify-between py-2">
+              <dt class="text-surface-500">Uptime</dt>
+              <dd class="font-medium">{system?.uptime_human || '-'}</dd>
+            </div>
+          </dl>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header">Load Average</div>
+      <!-- Load Average Card -->
+      <div class="card p-4">
+        <header class="card-header">
+          <h3 class="h4">Load Average</h3>
+        </header>
         <div class="card-body">
           {#if status?.loadavg}
-            <div class="stat">
-              <span class="label">1 min</span>
-              <span class="value">{status.loadavg['1m']}</span>
-            </div>
-            <div class="stat">
-              <span class="label">5 min</span>
-              <span class="value">{status.loadavg['5m']}</span>
-            </div>
-            <div class="stat">
-              <span class="label">15 min</span>
-              <span class="value">{status.loadavg['15m']}</span>
-            </div>
+            <dl class="divide-y divide-surface-200">
+              <div class="flex justify-between py-2">
+                <dt class="text-surface-500">1 min</dt>
+                <dd class="font-medium">{status.loadavg['1m']}</dd>
+              </div>
+              <div class="flex justify-between py-2">
+                <dt class="text-surface-500">5 min</dt>
+                <dd class="font-medium">{status.loadavg['5m']}</dd>
+              </div>
+              <div class="flex justify-between py-2">
+                <dt class="text-surface-500">15 min</dt>
+                <dd class="font-medium">{status.loadavg['15m']}</dd>
+              </div>
+            </dl>
           {/if}
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header">Services</div>
+      <!-- Services Card -->
+      <div class="card p-4">
+        <header class="card-header">
+          <h3 class="h4">Services</h3>
+        </header>
         <div class="card-body">
-          {#each services as svc}
-            <div class="stat">
-              <span class="label">{svc.display_name}</span>
-              <span class="value" class:active={svc.active} class:inactive={!svc.active}>
-                {svc.active ? '●' : '○'} {svc.status}
-              </span>
-            </div>
-          {/each}
+          <dl class="divide-y divide-surface-200">
+            {#each services as svc}
+              <div class="flex justify-between py-2">
+                <dt class="text-surface-500">{svc.display_name}</dt>
+                <dd>
+                  <span class="badge {svc.active ? 'preset-filled-success-500' : 'preset-filled-error-500'}">
+                    {svc.active ? '● Running' : '○ Stopped'}
+                  </span>
+                </dd>
+              </div>
+            {/each}
+          </dl>
         </div>
       </div>
     </div>
   {/if}
 </div>
-
-<style>
-  .dashboard {
-    max-width: 1200px;
-  }
-
-  h2 {
-    margin: 0 0 1.5rem;
-    color: #f1f5f9;
-  }
-
-  .cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 1rem;
-  }
-
-  .card {
-    background: #1e293b;
-    border-radius: 8px;
-    overflow: hidden;
-  }
-
-  .card-header {
-    background: #334155;
-    padding: 0.75rem 1rem;
-    font-weight: 600;
-    color: #94a3b8;
-    font-size: 0.875rem;
-    text-transform: uppercase;
-  }
-
-  .card-body {
-    padding: 1rem;
-  }
-
-  .stat {
-    display: flex;
-    justify-content: space-between;
-    padding: 0.5rem 0;
-    border-bottom: 1px solid #334155;
-  }
-
-  .stat:last-child {
-    border-bottom: none;
-  }
-
-  .label {
-    color: #94a3b8;
-  }
-
-  .value {
-    font-weight: 500;
-  }
-
-  .active {
-    color: #22c55e;
-  }
-
-  .inactive {
-    color: #ef4444;
-  }
-</style>
