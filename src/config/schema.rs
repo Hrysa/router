@@ -397,6 +397,15 @@ pub struct FirewallRule {
     pub saddr: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daddr: Option<String>,
+    /// Invert interfaces match (match everything EXCEPT these interfaces).
+    #[serde(default)]
+    pub interfaces_invert: bool,
+    /// Invert source address match (match everything EXCEPT this address).
+    #[serde(default)]
+    pub saddr_invert: bool,
+    /// Invert destination address match (match everything EXCEPT this address).
+    #[serde(default)]
+    pub daddr_invert: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -891,6 +900,7 @@ interfaces:
             mark: None,
             tproxy_port: None,
             counter: false,
+            interfaces_invert: false, saddr_invert: false, daddr_invert: false,
             enabled: true,
         };
         let yaml = serde_yaml::to_string(&rule).unwrap();

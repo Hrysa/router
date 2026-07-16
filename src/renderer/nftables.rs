@@ -132,17 +132,17 @@ fn add_rule(
 
 // ── Expression builders ──────────────────────────────────────────────────────
 
-fn iifname_match(name: &str) -> Statement<'static> {
+fn iifname_match(name: &str, invert: bool) -> Statement<'static> {
     Statement::Match(Match {
         left: Expression::Named(NamedExpression::Meta(Meta {
             key: MetaKey::Iifname,
         })),
         right: Expression::String(Cow::Owned(name.to_string())),
-        op: Operator::EQ,
+        op: if invert { Operator::NEQ } else { Operator::EQ },
     })
 }
 
-fn iifname_set_match(names: &[String]) -> Statement<'static> {
+fn iifname_set_match(names: &[String], invert: bool) -> Statement<'static> {
     Statement::Match(Match {
         left: Expression::Named(NamedExpression::Meta(Meta {
             key: MetaKey::Iifname,
@@ -153,7 +153,7 @@ fn iifname_set_match(names: &[String]) -> Statement<'static> {
                 .map(|n| SetItem::Element(Expression::String(Cow::Owned(n.clone()))))
                 .collect(),
         )),
-        op: Operator::EQ,
+        op: if invert { Operator::NEQ } else { Operator::EQ },
     })
 }
 
@@ -181,7 +181,9 @@ fn parse_cidr(s: &str) -> Option<(&str, u32)> {
     }
 }
 
-fn ip_saddr_match(addr: &str) -> Statement<'static> {
+fn ip_saddr_match(addr: &str, invert: bool) -> Statement<'static> {
+    let eq_op = if invert { Operator::NEQ } else { Operator::EQ };
+    let in_op = if invert { Operator::NEQ } else { Operator::IN };
     if let Some((raw, len)) = parse_cidr(addr) {
         Statement::Match(Match {
             left: Expression::Named(NamedExpression::Payload(Payload::PayloadField(
@@ -194,10 +196,9 @@ fn ip_saddr_match(addr: &str) -> Statement<'static> {
                 addr: Box::new(Expression::String(Cow::Owned(raw.to_string()))),
                 len,
             })),
-            op: Operator::EQ,
+            op: eq_op,
         })
     } else {
-        // set reference like @wl_mac — use 'in' operator
         Statement::Match(Match {
             left: Expression::Named(NamedExpression::Payload(Payload::PayloadField(
                 PayloadField {
@@ -206,12 +207,14 @@ fn ip_saddr_match(addr: &str) -> Statement<'static> {
                 },
             ))),
             right: Expression::String(Cow::Owned(addr.to_string())),
-            op: Operator::IN,
+            op: in_op,
         })
     }
 }
 
-fn ip_daddr_match(addr: &str) -> Statement<'static> {
+fn ip_daddr_match(addr: &str, invert: bool) -> Statement<'static> {
+    let eq_op = if invert { Operator::NEQ } else { Operator::EQ };
+    let in_op = if invert { Operator::NEQ } else { Operator::IN };
     if let Some((raw, len)) = parse_cidr(addr) {
         Statement::Match(Match {
             left: Expression::Named(NamedExpression::Payload(Payload::PayloadField(
@@ -224,10 +227,9 @@ fn ip_daddr_match(addr: &str) -> Statement<'static> {
                 addr: Box::new(Expression::String(Cow::Owned(raw.to_string()))),
                 len,
             })),
-            op: Operator::EQ,
+            op: eq_op,
         })
     } else {
-        // set reference like @blocked — use 'in' operator
         Statement::Match(Match {
             left: Expression::Named(NamedExpression::Payload(Payload::PayloadField(
                 PayloadField {
@@ -236,7 +238,7 @@ fn ip_daddr_match(addr: &str) -> Statement<'static> {
                 },
             ))),
             right: Expression::String(Cow::Owned(addr.to_string())),
-            op: Operator::IN,
+            op: in_op,
         })
     }
 }
@@ -372,7 +374,7 @@ fn lookup_set_type<'a>(config: &'a Config, set_name: &str) -> Option<&'a str> {
 
 /// Build an address match for a set reference, choosing the correct protocol
 /// based on the set's type (ether_addr → "ether", ipv4_addr → "ip", etc.).
-fn set_ref_match(config: &Config, field: &str, set_ref: &str) -> Option<Statement<'static>> {
+fn set_ref_match(config: &Config, field: &str, set_ref: &str, invert: bool) -> Option<Statement<'static>> {
     let set_name = set_ref.strip_prefix('@')?;
     let set_type = lookup_set_type(config, set_name)?;
     let protocol = match set_type {
@@ -381,6 +383,7 @@ fn set_ref_match(config: &Config, field: &str, set_ref: &str) -> Option<Statemen
         "ipv6_addr" => "ip6",
         _ => "ip",
     };
+    let op = if invert { Operator::NEQ } else { Operator::IN };
     Some(Statement::Match(Match {
         left: Expression::Named(NamedExpression::Payload(Payload::PayloadField(
             PayloadField {
@@ -389,7 +392,7 @@ fn set_ref_match(config: &Config, field: &str, set_ref: &str) -> Option<Statemen
             },
         ))),
         right: Expression::String(Cow::Owned(set_ref.to_string())),
-        op: Operator::IN,
+        op,
     }))
 }
 
@@ -412,9 +415,9 @@ fn build_rule_stmts(config: &Config, rule: &FirewallRule, proto: Option<&str>) -
     // Interface match
     if !rule.interfaces.is_empty() {
         if rule.interfaces.len() == 1 {
-            stmts.push(iifname_match(&rule.interfaces[0]));
+            stmts.push(iifname_match(&rule.interfaces[0], rule.interfaces_invert));
         } else {
-            stmts.push(iifname_set_match(&rule.interfaces));
+            stmts.push(iifname_set_match(&rule.interfaces, rule.interfaces_invert));
         }
     }
 
@@ -437,10 +440,10 @@ fn build_rule_stmts(config: &Config, rule: &FirewallRule, proto: Option<&str>) -
     if let Some(saddr) = &rule.saddr {
         if saddr == "@local" {
             stmts.push(fib_saddr_local_match());
-        } else if let Some(stmt) = set_ref_match(config, "saddr", saddr) {
+        } else if let Some(stmt) = set_ref_match(config, "saddr", saddr, rule.saddr_invert) {
             stmts.push(stmt);
         } else {
-            stmts.push(ip_saddr_match(saddr));
+            stmts.push(ip_saddr_match(saddr, rule.saddr_invert));
         }
     }
 
@@ -448,10 +451,10 @@ fn build_rule_stmts(config: &Config, rule: &FirewallRule, proto: Option<&str>) -
     if let Some(daddr) = &rule.daddr {
         if daddr == "@local" {
             stmts.push(fib_daddr_local_match());
-        } else if let Some(stmt) = set_ref_match(config, "daddr", daddr) {
+        } else if let Some(stmt) = set_ref_match(config, "daddr", daddr, rule.daddr_invert) {
             stmts.push(stmt);
         } else {
-            stmts.push(ip_daddr_match(daddr));
+            stmts.push(ip_daddr_match(daddr, rule.daddr_invert));
         }
     }
 
@@ -548,7 +551,7 @@ fn render_filter_table(config: &Config, doc: &mut NftablesDocument) {
         NfFamily::INet,
         "filter",
         "input",
-        vec![iifname_match("lo"), Statement::Accept(None)],
+        vec![iifname_match("lo", false), Statement::Accept(None)],
         None,
     ));
 
@@ -823,7 +826,7 @@ fn render_nat_table(config: &Config, doc: &mut NftablesDocument) {
                 };
                 for proto in &protos {
                     let mut stmts = vec![
-                        ip_daddr_match(&pf.redirect_address),
+                        ip_daddr_match(&pf.redirect_address, false),
                         proto_match(proto),
                     ];
                     // Port match only for TCP/UDP
@@ -861,9 +864,9 @@ fn build_port_forward_match_stmts<'a>(pf: &'a PortForward, proto: &str) -> Vec<S
 
     // Interface match
     if pf.interfaces.len() == 1 {
-        stmts.push(iifname_match(&pf.interfaces[0]));
+        stmts.push(iifname_match(&pf.interfaces[0], false));
     } else if pf.interfaces.len() > 1 {
-        stmts.push(iifname_set_match(&pf.interfaces));
+        stmts.push(iifname_set_match(&pf.interfaces, false));
     }
 
     // Protocol
@@ -874,7 +877,7 @@ fn build_port_forward_match_stmts<'a>(pf: &'a PortForward, proto: &str) -> Vec<S
         if saddr == "@local" {
             stmts.push(fib_saddr_local_match());
         } else {
-            stmts.push(ip_saddr_match(saddr));
+            stmts.push(ip_saddr_match(saddr, false));
         }
     }
 
@@ -883,7 +886,7 @@ fn build_port_forward_match_stmts<'a>(pf: &'a PortForward, proto: &str) -> Vec<S
         if taddr == "@local" {
             stmts.push(fib_daddr_local_match());
         } else {
-            stmts.push(ip_daddr_match(taddr));
+            stmts.push(ip_daddr_match(taddr, false));
         }
     }
 
@@ -939,7 +942,7 @@ fn render_blackhole(config: &Config, doc: &mut NftablesDocument) {
         "blackhole",
         "input",
         vec![
-            ip_saddr_match("@blocked"),
+            ip_saddr_match("@blocked", false),
             Statement::Drop(None),
         ],
         None,
@@ -961,7 +964,7 @@ fn render_blackhole(config: &Config, doc: &mut NftablesDocument) {
         "blackhole",
         "forward",
         vec![
-            ip_saddr_match("@blocked"),
+            ip_saddr_match("@blocked", false),
             Statement::Drop(None),
         ],
         None,
@@ -972,7 +975,7 @@ fn render_blackhole(config: &Config, doc: &mut NftablesDocument) {
         "blackhole",
         "forward",
         vec![
-            ip_daddr_match("@blocked"),
+            ip_daddr_match("@blocked", false),
             Statement::Drop(None),
         ],
         None,
@@ -1018,9 +1021,9 @@ fn render_tproxy_table(config: &Config, doc: &mut NftablesDocument) {
             // Interface match
             if !rule.interfaces.is_empty() {
                 if rule.interfaces.len() == 1 {
-                    stmts.push(iifname_match(&rule.interfaces[0]));
+                    stmts.push(iifname_match(&rule.interfaces[0], false));
                 } else {
-                    stmts.push(iifname_set_match(&rule.interfaces));
+                    stmts.push(iifname_set_match(&rule.interfaces, false));
                 }
             }
 
@@ -1032,10 +1035,10 @@ fn render_tproxy_table(config: &Config, doc: &mut NftablesDocument) {
 
             // Address matches
             if let Some(saddr) = &rule.saddr {
-                stmts.push(ip_saddr_match(saddr));
+                stmts.push(ip_saddr_match(saddr, false));
             }
             if let Some(daddr) = &rule.daddr {
-                stmts.push(ip_daddr_match(daddr));
+                stmts.push(ip_daddr_match(daddr, false));
             }
 
             // Port matches
@@ -1203,6 +1206,7 @@ mod tests {
             mark: None,
             tproxy_port: None,
             counter: false,
+            interfaces_invert: false, saddr_invert: false, daddr_invert: false,
             enabled: true,
         });
         let val = render_json(&config);
@@ -1271,6 +1275,7 @@ mod tests {
             mark: Some(1),
             tproxy_port: Some(12345),
             counter: false,
+            interfaces_invert: false, saddr_invert: false, daddr_invert: false,
             enabled: true,
         });
         let val = render_json(&config);
@@ -1346,6 +1351,7 @@ mod tests {
             mark: None,
             tproxy_port: None,
             counter: false,
+            interfaces_invert: false, saddr_invert: false, daddr_invert: false,
             enabled: true,
         };
         let stmts = build_rule_stmts(&Config::default(), &rule, Some("tcp"));
@@ -1374,6 +1380,7 @@ mod tests {
             mark: None,
             tproxy_port: None,
             counter: false,
+            interfaces_invert: false, saddr_invert: false, daddr_invert: false,
             enabled: true,
         };
         let stmts = build_rule_stmts(&Config::default(), &rule, None);

@@ -45,6 +45,7 @@
     return {
       action: 'accept', comment: '', interfaces: [] as string[], oif: '', proto: [] as string[],
       dport: '', sport: '', saddr: '', daddr: '',
+      interfaces_invert: false, saddr_invert: false, daddr_invert: false,
       state: '', rate: '', log: false, log_prefix: '',
       mark: '', tproxy_port: '', counter: false, enabled: true,
     };
@@ -61,12 +62,15 @@
   function ruleToPayload(form: any) {
     const rule: any = { id: form.id ?? 0, action: form.action, comment: form.comment, log: form.log, enabled: form.enabled };
     if (form.interfaces.length > 0) rule.interfaces = [...form.interfaces];
+    if (form.interfaces_invert) rule.interfaces_invert = true;
     if (form.oif) rule.oif = form.oif;
     if (form.proto && form.proto.length > 0) rule.proto = [...form.proto];
     if (form.dport) rule.dport = parsePort(form.dport);
     if (form.sport) rule.sport = parsePort(form.sport);
     if (form.saddr) rule.saddr = form.saddr;
+    if (form.saddr_invert) rule.saddr_invert = true;
     if (form.daddr) rule.daddr = form.daddr;
+    if (form.daddr_invert) rule.daddr_invert = true;
     if (form.state && form.state.length > 0) rule.state = [...form.state];
     if (form.rate) rule.rate = form.rate;
     if (form.log_prefix) rule.log_prefix = form.log_prefix;
@@ -82,12 +86,15 @@
       action: rule.action || 'accept',
       comment: rule.comment || '',
       interfaces: [...(rule.interfaces || [])],
+      interfaces_invert: rule.interfaces_invert || false,
       oif: rule.oif || '',
       proto: [...(rule.proto || [])],
       dport: formatPort(rule.dport),
       sport: formatPort(rule.sport),
       saddr: rule.saddr || '',
+      saddr_invert: rule.saddr_invert || false,
       daddr: rule.daddr || '',
+      daddr_invert: rule.daddr_invert || false,
       state: [...(rule.state || [])],
       rate: rule.rate || '',
       log: rule.log || false,
@@ -698,6 +705,10 @@
         <label class="label col-span-2">
           <span class="label-text">Interfaces</span>
           <InterfaceSelect bind:value={ruleForm.interfaces} multiple placeholder="Select interfaces" items={allInterfaces} />
+          <label class="flex items-center gap-2 mt-1">
+            <input type="checkbox" class="checkbox" bind:checked={ruleForm.interfaces_invert} />
+            <span class="text-sm">Invert (NOT these interfaces)</span>
+          </label>
         </label>
         <label class="label">
           <span class="label-text">Out Interface (oif)</span>
@@ -723,6 +734,10 @@
               {/each}
             </select>
           </div>
+          <label class="flex items-center gap-2 mt-1">
+            <input type="checkbox" class="checkbox" bind:checked={ruleForm.saddr_invert} />
+            <span class="text-sm">Invert (NOT this address)</span>
+          </label>
         </label>
         <label class="label">
           <span class="label-text">Source Port</span>
@@ -750,6 +765,10 @@
               {/each}
             </select>
           </div>
+          <label class="flex items-center gap-2 mt-1">
+            <input type="checkbox" class="checkbox" bind:checked={ruleForm.daddr_invert} />
+            <span class="text-sm">Invert (NOT this address)</span>
+          </label>
         </label>
         <label class="label">
           <span class="label-text">Dest Port</span>
