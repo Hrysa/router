@@ -66,7 +66,6 @@ pub async fn restart_service(Path(name): Path<String>) -> Result<Json<Value>, Ap
 
 fn parse_service(name: &str) -> Result<Service, ApiError> {
     match name.to_lowercase().as_str() {
-        "nftables" => Ok(Service::Nftables),
         "dhcpd" | "kea-dhcp4" | "dhcp" => Ok(Service::Dhcpd),
         "pppd" | "ppp" | "pppoe" => Ok(Service::Pppd),
         "networking" | "network" | "systemd-networkd" => Ok(Service::Networking),

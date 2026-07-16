@@ -64,6 +64,9 @@ regex = "1"
 # Hostname
 gethostname = "0.5"
 
+# nftables JSON API
+nftables = { version = "0.6.3", features = ["tokio"] }
+
 # MIME types for SPA serving
 mime_guess = "2"
 

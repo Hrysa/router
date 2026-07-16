@@ -52,7 +52,7 @@ pub async fn apply(config: &Config, prev_config: &Config, _config_path: &Path, s
     write_changed_configs(&rendered, &changeset).await?;
 
     // Restart changed services
-    let services_restarted = restart_services(config, &changeset, service_manager).await?;
+    let services_restarted = restart_services(config, &rendered, &changeset, service_manager).await?;
 
     // Always set up tproxy routing (ip rule + ip route) — these are ephemeral
     // and need to be re-applied on every boot/config change.
@@ -75,7 +75,9 @@ pub async fn apply(config: &Config, prev_config: &Config, _config_path: &Path, s
 
 /// Detect changes by comparing rendered configs against actual files on disk.
 fn detect_rendered_changes(rendered: &RenderedConfigs) -> ChangeSet {
-    let nftables = file_changed("/etc/nftables.conf", &rendered.nftables);
+    // nftables: JSON is applied directly, not written to disk.
+    // Always treat as changed to ensure rules are applied.
+    let nftables = true;
     let dhcpd = file_changed("/etc/kea/kea-dhcp4.conf", &rendered.kea_dhcp4);
     let ppp = file_changed("/etc/ppp/peers/isp", &rendered.ppp_peers)
         || file_changed("/etc/ppp/chap-secrets", &rendered.ppp_chap);
@@ -163,10 +165,8 @@ async fn syntax_check(
     let staged = staged_dir();
     std::fs::create_dir_all(&staged)?;
 
-    // Write nftables to staged file and check
-    let nft_path = format!("{}/nftables.conf", staged);
-    std::fs::write(&nft_path, &rendered.nftables)?;
-    service_manager.check_nftables(&nft_path).await?;
+    // Syntax-check nftables via JSON
+    service_manager.check_nftables_json(&rendered.nftables).await?;
 
     // Write kea-dhcp4 to staged file and check (optional — may not be installed)
     let kea_path = format!("{}/kea-dhcp4.json", staged);
@@ -185,9 +185,9 @@ async fn syntax_check(
 
 /// Write only rendered configs that changed.
 async fn write_changed_configs(rendered: &RenderedConfigs, changeset: &ChangeSet) -> Result<()> {
+    // nftables: JSON is applied directly, not written to disk
     if changeset.nftables {
-        tracing::debug!("writing /etc/nftables.conf");
-        atomic_write("/etc/nftables.conf", &rendered.nftables)?;
+        tracing::debug!("nftables rules will be applied via JSON (not written to disk)");
     }
 
     if changeset.dhcpd {
@@ -376,22 +376,21 @@ async fn apply_tproxy_routing(prev_config: &Config, config: &Config) -> Result<(
 /// Restart services that changed.
 async fn restart_services(
     _config: &Config,
+    rendered: &RenderedConfigs,
     changeset: &ChangeSet,
     service_manager: &ServiceManager,
 ) -> Result<Vec<String>> {
     let mut restarted = Vec::new();
 
-    // nftables: apply rules directly via nft -f if config changed
+    // nftables: apply rules via JSON if config changed
     if changeset.nftables {
-        tracing::info!("nftables config changed, applying rules");
-        let nft_path = "/etc/nftables.conf";
-        service_manager.apply_nftables(nft_path).await?;
+        tracing::info!("nftables config changed, applying rules via JSON");
+        service_manager.apply_nftables_json(&rendered.nftables).await?;
         restarted.push("nftables".into());
     }
 
     // All systemd-managed services: start if not running, restart if config changed
     let systemd_services: Vec<(bool, Service)> = vec![
-        (changeset.nftables, Service::Nftables),
         (changeset.dhcpd, Service::Dhcpd),
         (changeset.interfaces, Service::Networking),
         (changeset.wireguard, Service::Wireguard),

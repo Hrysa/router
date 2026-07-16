@@ -6,7 +6,6 @@ use tokio::process::Command;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Service {
-    Nftables,
     #[serde(rename = "kea-dhcp4-server")]
     Dhcpd,
     Pppd,
@@ -19,7 +18,6 @@ pub enum Service {
 impl Service {
     pub fn systemd_name(&self) -> &'static str {
         match self {
-            Self::Nftables => "nftables",
             Self::Dhcpd => "kea-dhcp4-server",
             Self::Pppd => "pppd",
             Self::Networking => "systemd-networkd",
@@ -31,7 +29,6 @@ impl Service {
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Nftables => "nftables",
             Self::Dhcpd => "Kea DHCPv4",
             Self::Pppd => "PPPoE",
             Self::Networking => "systemd-networkd",
@@ -44,7 +41,6 @@ impl Service {
     /// All managed services.
     pub fn all() -> &'static [Service] {
         &[
-            Self::Nftables,
             Self::Dhcpd,
             Self::Pppd,
             Self::Networking,
@@ -201,36 +197,52 @@ impl ServiceManager {
         Ok(())
     }
 
-    /// Apply nftables rules (special handling: use nft -f instead of systemctl).
-    pub async fn apply_nftables(&self, config_path: &str) -> Result<()> {
+    /// Apply nftables rules via JSON file (`nft -j -f <path>`).
+    pub async fn apply_nftables_json(&self, json: &str) -> Result<()> {
+        let staged = format!(
+            "/tmp/routerd-nft-{}.json",
+            nix::unistd::getuid()
+        );
+        std::fs::write(&staged, json)?;
+
         let nft = find_command("nft")?;
         let output = Command::new(&nft)
-            .args(["-f", config_path])
+            .args(["-j", "-f", &staged])
             .timeout_run(self.apply_timeout)
             .await?;
 
+        let _ = std::fs::remove_file(&staged);
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("nftables apply failed: {}", stderr.trim());
+            anyhow::bail!("nftables JSON apply failed: {}", stderr.trim());
         }
 
-        tracing::info!("nftables rules applied");
+        tracing::info!("nftables rules applied via JSON");
         Ok(())
     }
 
-    /// Validate nftables config syntax.
-    pub async fn check_nftables(&self, config_path: &str) -> Result<()> {
+    /// Validate nftables config syntax via JSON file (`nft -j -c -f <path>`).
+    pub async fn check_nftables_json(&self, json: &str) -> Result<()> {
+        let staged = format!(
+            "/tmp/routerd-nft-check-{}.json",
+            nix::unistd::getuid()
+        );
+        std::fs::write(&staged, json)?;
+
         let nft = find_command("nft")?;
         let output = Command::new(&nft)
-            .args(["-c", "-f", config_path])
+            .args(["-j", "-c", "-f", &staged])
             .output()
             .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("nftables syntax check failed: {}", stderr.trim());
+            let _ = std::fs::remove_file(&staged);
+            anyhow::bail!("nftables JSON syntax check failed: {}", stderr.trim());
         }
 
+        let _ = std::fs::remove_file(&staged);
         Ok(())
     }
 
@@ -315,7 +327,6 @@ mod tests {
 
     #[test]
     fn test_service_names() {
-        assert_eq!(Service::Nftables.systemd_name(), "nftables");
         assert_eq!(Service::Dhcpd.systemd_name(), "kea-dhcp4-server");
         assert_eq!(Service::Networking.systemd_name(), "systemd-networkd");
         assert_eq!(Service::Wireguard.systemd_name(), "wg-quick@wg0");
@@ -323,12 +334,11 @@ mod tests {
 
     #[test]
     fn test_service_display_names() {
-        assert_eq!(Service::Nftables.display_name(), "nftables");
         assert_eq!(Service::Dhcpd.display_name(), "Kea DHCPv4");
     }
 
     #[test]
     fn test_all_services() {
-        assert_eq!(Service::all().len(), 7);
+        assert_eq!(Service::all().len(), 6);
     }
 }
