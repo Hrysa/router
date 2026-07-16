@@ -543,6 +543,15 @@ fn render_filter_table(config: &Config, doc: &mut NftablesDocument) {
         ));
     }
 
+    // Implicit: accept all loopback traffic (local services need this)
+    doc.objects.push(add_rule(
+        NfFamily::INet,
+        "filter",
+        "input",
+        vec![iifname_match("lo"), Statement::Accept(None)],
+        None,
+    ));
+
     for rule in config
         .firewall
         .rules
