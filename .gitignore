@@ -2,7 +2,7 @@
 target/
 
 # Configuration
-config/
+/config/
 
 # Environment files
 .env
