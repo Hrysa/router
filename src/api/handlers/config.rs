@@ -448,7 +448,7 @@ fn set_used_by(config: &Config, set_name: &str) -> Option<String> {
 
     // Port forwards
     for pf in &config.firewall.nat.port_forward {
-        let used = port_spec_uses_set(&pf.target_port, &prefix)
+        let used = pf.target_port.as_ref().map_or(false, |p| port_spec_uses_set(p, &prefix))
             || pf.source_address.as_ref().map_or(false, |v| *v == prefix)
             || pf.target_address.as_ref().map_or(false, |v| *v == prefix);
         if used {

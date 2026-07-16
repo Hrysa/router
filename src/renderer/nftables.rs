@@ -701,12 +701,13 @@ fn render_nat_table(config: &Config, doc: &mut NftablesDocument) {
             for proto in &protos {
                 let mut stmts = build_port_forward_match_stmts(pf, proto);
 
-                // DNAT target
+                // DNAT target — port only for TCP/UDP
+                let redirect_port = pf.redirect_port.as_ref().map(|p| port_spec_expr(p));
                 stmts.push(Statement::DNAT(Some(stmt::NAT {
                     addr: Some(Expression::String(Cow::Owned(
                         pf.redirect_address.clone(),
                     ))),
-                    port: Some(port_spec_expr(&pf.redirect_port)),
+                    port: redirect_port,
                     family: Some(NATFamily::IP),
                     flags: None,
                 })));
@@ -760,12 +761,15 @@ fn render_nat_table(config: &Config, doc: &mut NftablesDocument) {
                     vec![pf.proto.as_str()]
                 };
                 for proto in &protos {
-                    let stmts = vec![
+                    let mut stmts = vec![
                         ip_daddr_match(&pf.redirect_address),
                         proto_match(proto),
-                        port_spec_match(proto, "dport", &pf.redirect_port),
-                        Statement::Masquerade(None),
                     ];
+                    // Port match only for TCP/UDP
+                    if let Some(ref rport) = pf.redirect_port {
+                        stmts.push(port_spec_match(proto, "dport", rport));
+                    }
+                    stmts.push(Statement::Masquerade(None));
                     doc.objects.push(add_rule(
                         NfFamily::IP,
                         "nat",
@@ -822,8 +826,10 @@ fn build_port_forward_match_stmts<'a>(pf: &'a PortForward, proto: &str) -> Vec<S
         }
     }
 
-    // Destination port (WAN port)
-    stmts.push(port_spec_match(proto, "dport", &pf.target_port));
+    // Destination port (WAN port) — only for TCP/UDP
+    if let Some(ref dport) = pf.target_port {
+        stmts.push(port_spec_match(proto, "dport", dport));
+    }
 
     stmts
 }
@@ -1151,12 +1157,12 @@ mod tests {
             id: 1,
             comment: "web".into(),
             proto: "tcp".into(),
-            target_port: PortSpec::Single(80),
+            target_port: Some(PortSpec::Single(80)),
             target_address: None,
             source_address: None,
             interfaces: vec!["eth0".into()],
             redirect_address: "192.168.1.100".into(),
-            redirect_port: PortSpec::Single(8080),
+            redirect_port: Some(PortSpec::Single(8080)),
             enabled: true,
         });
         let val = render_json(&config);
@@ -1343,12 +1349,12 @@ mod tests {
             id: 1,
             comment: "web".into(),
             proto: "tcp".into(),
-            target_port: PortSpec::Single(80),
+            target_port: Some(PortSpec::Single(80)),
             target_address: None,
             source_address: None,
             interfaces: vec!["eth0".into()],
             redirect_address: "192.168.1.100".into(),
-            redirect_port: PortSpec::Single(8080),
+            redirect_port: Some(PortSpec::Single(8080)),
             enabled: true,
         });
         let val = render_json(&config);
@@ -1364,12 +1370,12 @@ mod tests {
             id: 2,
             comment: "ext".into(),
             proto: "tcp".into(),
-            target_port: PortSpec::Single(443),
+            target_port: Some(PortSpec::Single(443)),
             target_address: None,
             source_address: None,
             interfaces: vec!["eth0".into()],
             redirect_address: "10.99.0.5".into(),
-            redirect_port: PortSpec::Single(443),
+            redirect_port: Some(PortSpec::Single(443)),
             enabled: true,
         });
         let val = render_json(&config);
@@ -1386,12 +1392,12 @@ mod tests {
             id: 1,
             comment: "web".into(),
             proto: "tcp".into(),
-            target_port: PortSpec::Single(80),
+            target_port: Some(PortSpec::Single(80)),
             target_address: None,
             source_address: Some("10.0.0.0/8".into()),
             interfaces: vec!["eth0".into()],
             redirect_address: "192.168.1.100".into(),
-            redirect_port: PortSpec::Single(8080),
+            redirect_port: Some(PortSpec::Single(8080)),
             enabled: true,
         });
         let val = render_json(&config);
@@ -1408,12 +1414,12 @@ mod tests {
             id: 1,
             comment: "web".into(),
             proto: "tcp".into(),
-            target_port: PortSpec::Single(80),
+            target_port: Some(PortSpec::Single(80)),
             target_address: None,
             source_address: None,
             interfaces: vec!["eth0".into(), "wg0".into()],
             redirect_address: "192.168.1.100".into(),
-            redirect_port: PortSpec::Single(8080),
+            redirect_port: Some(PortSpec::Single(8080)),
             enabled: true,
         });
         let val = render_json(&config);

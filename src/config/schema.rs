@@ -457,8 +457,9 @@ pub struct PortForward {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub comment: String,
     /// Destination port to match (WAN-side). Aliases: wan_port, source_port.
-    #[serde(alias = "wan_port", alias = "source_port")]
-    pub target_port: PortSpec,
+    /// Optional for non-TCP/UDP protocols (ICMP, GRE, etc.).
+    #[serde(alias = "wan_port", alias = "source_port", default, skip_serializing_if = "Option::is_none")]
+    pub target_port: Option<PortSpec>,
     /// Destination address to match (WAN-side). Optional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_address: Option<String>,
@@ -472,8 +473,9 @@ pub struct PortForward {
     #[serde(alias = "target_ip", alias = "lan_ip")]
     pub redirect_address: String,
     /// Redirect destination port (dnat to). Alias: lan_port.
-    #[serde(alias = "lan_port")]
-    pub redirect_port: PortSpec,
+    /// Optional for non-TCP/UDP protocols (ICMP, GRE, etc.).
+    #[serde(alias = "lan_port", default, skip_serializing_if = "Option::is_none")]
+    pub redirect_port: Option<PortSpec>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }

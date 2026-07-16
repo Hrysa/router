@@ -222,7 +222,7 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
                 message: "at least one interface must be specified".into(),
             });
         }
-        if let super::schema::PortSpec::Single(port) = pf.target_port {
+        if let Some(super::schema::PortSpec::Single(port)) = pf.target_port {
             if port == 0 {
                 errors.push(ValidationError {
                     field: format!("firewall.nat.port_forward[{}].target_port", i),
@@ -244,7 +244,7 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
                 message: format!("invalid IP: {}", pf.redirect_address),
             });
         }
-        if let super::schema::PortSpec::Single(port) = pf.redirect_port {
+        if let Some(super::schema::PortSpec::Single(port)) = pf.redirect_port {
             if port == 0 {
                 errors.push(ValidationError {
                     field: format!("firewall.nat.port_forward[{}].redirect_port", i),

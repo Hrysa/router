@@ -151,7 +151,7 @@
     const src = pf.source_address || '';
     const sport = '';
     const dst = pf.target_address || '';
-    const dport = formatPort(pf.target_port) || '';
+    const dport = pf.target_port ? formatPort(pf.target_port) : '';
     const left = src || sport ? `${src}${sport ? ':' + sport : ''}` : '';
     const right = dst || dport ? `${dst}${dport ? ':' + dport : ''}` : '';
     if (left && right) return `${left} → ${right}`;
@@ -823,6 +823,10 @@
             <option value="tcp">TCP</option>
             <option value="udp">UDP</option>
             <option value="tcp+udp">TCP + UDP</option>
+            <option value="icmp">ICMP</option>
+            <option value="gre">GRE</option>
+            <option value="esp">ESP</option>
+            <option value="ah">AH</option>
           </select>
         </label>
         <label class="label col-span-2">
@@ -856,6 +860,7 @@
             </select>
           </div>
         </label>
+        {#if pfForm.proto === 'tcp' || pfForm.proto === 'udp' || pfForm.proto === 'tcp+udp'}
         <label class="label">
           <span class="label-text">Target Port</span>
           <div class="flex flex-col gap-1">
@@ -868,15 +873,18 @@
             </select>
           </div>
         </label>
+        {/if}
 
         <label class="label">
           <span class="label-text">Redirect Address</span>
           <input class="input" bind:value={pfForm.redirect_address} placeholder="192.168.1.100" />
         </label>
+        {#if pfForm.proto === 'tcp' || pfForm.proto === 'udp' || pfForm.proto === 'tcp+udp'}
         <label class="label">
           <span class="label-text">Redirect Port</span>
           <input class="input" bind:value={pfForm.redirect_port} placeholder="8080" />
         </label>
+        {/if}
 
         <label class="flex items-center gap-2 mt-6">
           <input type="checkbox" class="checkbox" bind:checked={pfForm.enabled} />
