@@ -33,6 +33,9 @@ Thumbs.db
 # Dependencies (if any vendored)
 /vendor/
 
+# Generated SPA assets
+/web/dist
+
 # Backup files
 *.bak
 *.tmp
