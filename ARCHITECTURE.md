@@ -23,8 +23,8 @@ routerd is a Linux router daemon that manages network services through a unified
                                            │
                      ┌─────────┬───────────┼───────────┬──────────┐
                      ▼         ▼           ▼           ▼          ▼
-                nftables    kea-dhcp4  unbound   systemd-     wireguard
-                                               networkd
+                 nftables    kea-dhcp4           systemd-     wireguard
+                                    networkd
 ```
 
 ## Architecture Layers
@@ -38,7 +38,7 @@ routerd is a Linux router daemon that manages network services through a unified
 │  Config Management, Renderers, Service Manager, Auth        │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 1: Infrastructure                                    │
-│  config.yml, systemd services, nftables, kea, unbound       │
+│  config.yml, systemd services, nftables, kea-dhcp4          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,7 +63,7 @@ External systems and data sources that routerd manages.
 
 | Component | systemd unit | Config file | Validation |
 |-----------|--------------|-------------|------------|
-| Firewall | `nftables` | `/etc/nftables.conf` | `nft -c` |
+| Firewall | `nftables` | — (JSON applied directly, no file) | `nft -j -c -f` |
 | Network | `systemd-networkd` | `/etc/systemd/network/50-routerd-*.network` | — |
 
 #### Optional (via `enabled` field)
@@ -71,11 +71,9 @@ External systems and data sources that routerd manages.
 | Component | systemd unit | Config file | `enabled` field |
 |-----------|--------------|-------------|-----------------|
 | DHCP | `kea-dhcp4` | `/etc/kea/kea-dhcp4.conf` | `dhcp.enabled` |
-| DNS | `unbound` | `/etc/unbound/unbound.conf.d/router.conf` | `dns.enabled` |
 | VPN | `wg-quick@wg0` | `/etc/wireguard/wg0.conf` | `vpn.wireguard.enabled` |
 | PPPoE | `pppd` | `/etc/ppp/peers/isp` | `interfaces.wan.method` (implicit) |
 | Traffic | `vnstat` | — | `monitoring.vnstat` |
-| NTP | `chrony` | — | `system.ntp.enabled` |
 
 ### systemd-networkd Config Files
 
@@ -101,7 +99,7 @@ Core modules that transform config into service configurations and manage their 
 
 | Module | Purpose |
 |--------|---------|
-| `schema.rs` | Serde structs for `config.yml` (852 lines) |
+| `schema.rs` | Serde structs for `config.yml` |
 | `store.rs` | Atomic read/write with backup |
 | `validator.rs` | Validation logic for config values |
 | `diff.rs` | Change detection between old/new config |
@@ -113,22 +111,23 @@ Transform abstract config into concrete service files:
 
 | Module | Output |
 |--------|--------|
-| `nftables.rs` | `/etc/nftables.conf` (758 lines) |
+| `nftables.rs` | nftables JSON ruleset (built with the `nftables` crate; applied via `nft -j -f`, never written to disk) |
 | `interfaces.rs` | `50-routerd-*.network`/`.netdev` files |
 | `kea.rs` | `/etc/kea/kea-dhcp4.conf` |
-| `unbound.rs` | `/etc/unbound/unbound.conf.d/router.conf` |
 | `ppp.rs` | `/etc/ppp/peers/isp` |
 | `wireguard.rs` | `/etc/wireguard/wg0.conf` |
+| `sysctl.rs` | `/etc/sysctl.d/90-routerd.conf` |
 | `sysctl.rs` | Sysctl settings |
 
 ### Service Management (`src/service/`)
 
 | Module | Purpose |
-|--------|---------|
-| `apply.rs` | Render → validate → write → restart pipeline (505 lines) |
+|--------|--------|
+| `apply.rs` | Render → validate → write → restart pipeline |
 | `manager.rs` | Systemd lifecycle (start/stop/restart) |
 | `hooks.rs` | User-defined lifecycle hooks |
 | `rollback.rs` | Config rollback on failure |
+| `singbox.rs` | Download/install sing-box binary |
 
 ### Auth (`src/auth/`)
 
@@ -146,8 +145,9 @@ User-facing interfaces and monitoring.
 ### API Server (`src/api/`)
 
 | Module | Purpose |
-|--------|---------|
+|--------|--------|
 | `server.rs` | Axum HTTP/HTTPS server + SPA serving |
+| `handlers/auth.rs` | Login / JWT issuance |
 | `handlers/config.rs` | Read/update router configuration |
 | `handlers/service.rs` | Trigger service restarts |
 | `handlers/status.rs` | System status |
@@ -179,13 +179,28 @@ routerd startup
     → validate (only enabled components)
     → detect changes (diff old vs new)
     → render changed configs
-    → syntax check (nft -c required, others optional)
+    → syntax check (nft -j -c -f required, others optional)
     → write configs (atomic: write .tmp, rename)
     → restart changed services
-        - nftables: nft -f (not systemctl)
+        - nftables: nft -j -f <staged JSON> (not systemctl, no file persisted)
         - systemd-networkd: networkctl reload (fallback: systemctl restart)
         - others: systemctl restart
 ```
+
+### nftables Layout
+
+The renderer emits a single JSON ruleset (`flush ruleset` + add objects) with four tables:
+
+| Table | Chains | Purpose |
+|-------|--------|---------|
+| `inet filter` | input, forward, output + named sets | firewall rules; implicit `ct state established,related accept` when policy is drop; implicit `iifname "lo" accept` in input |
+| `ip nat` | prerouting (DNAT), postrouting | port forwards + masquerade; auto hairpin masquerade for forwards into the LAN subnet |
+| `inet mangle` | prerouting (prio -150) | tproxy rules (mark + tproxy + accept) |
+| `inet blackhole` | input, forward (prio -5) | `blocked` set, drop saddr/daddr matches |
+
+Address conventions: `@setname` references a named set (protocol picked from the set's type), `@local` compiles to a `fib ... type local` match.
+
+Every rule's comment is `[<id>] <comment>` — `/api/firewall/stats` parses the ID out of `nft -j list chain` output to attach per-rule counters.
 
 ## Init Setup (first run)
 
@@ -208,61 +223,22 @@ routerd -c /etc/router
         - other components: skip if not installed
 ```
 
-## Project Structure
+## Repository Layout
 
 ```
 router/
 ├── Cargo.toml
-├── config/
-│   ├── config.yml              # Main config (default for -c)
-│   └── backups/                # Timestamped backups
+├── config/                 # runtime config (gitignored; default -c target)
+├── sing-box/               # user-managed sing-box files (gitignored)
 ├── src/
-│   ├── main.rs                 # CLI args + init flow
-│   ├── config/
-│   │   ├── mod.rs
-│   │   ├── schema.rs           # serde structs for config.yml
-│   │   ├── store.rs            # atomic read/write + backup
-│   │   ├── validator.rs        # validation logic
-│   │   ├── diff.rs             # change detection
-│   │   └── init.rs             # first-run auto-detect setup
-│   ├── renderer/
-│   │   ├── mod.rs
-│   │   ├── nftables.rs
-│   │   ├── kea.rs              # kea-dhcp4 JSON config
-│   │   ├── unbound.rs
-│   │   ├── ppp.rs
-│   │   ├── interfaces.rs       # systemd-networkd .network/.netdev
-│   │   └── wireguard.rs
-│   ├── service/
-│   │   ├── mod.rs
-│   │   ├── manager.rs          # systemd lifecycle + networkctl
-│   │   ├── apply.rs            # render → validate → write → restart
-│   │   └── rollback.rs
-│   ├── api/
-│   │   ├── mod.rs
-│   │   ├── server.rs           # axum router + SPA serving
-│   │   ├── middleware/
-│   │   │   └── auth.rs
-│   │   ├── handlers/
-│   │   │   ├── config.rs
-│   │   │   ├── service.rs
-│   │   │   ├── status.rs
-│   │   │   └── monitor.rs
-│   │   └── error.rs
-│   ├── monitor/
-│   │   ├── mod.rs
-│   │   ├── interfaces.rs
-│   │   ├── traffic.rs
-│   │   ├── leases.rs
-│   │   ├── connections.rs
-│   │   └── system.rs
-│   └── auth/
-│       ├── jwt.rs
-│       └── password.rs
-├── web/                        # SPA (Svelte 5, embedded in binary)
-└── scripts/
-    ├── install.sh
-    └── systemd/routerd.service
+│   ├── main.rs             # CLI entry + init flow
+│   ├── config/             # schema, store, validator, diff, init
+│   ├── renderer/           # nftables, kea, interfaces, ppp, wireguard, sysctl
+│   ├── service/            # apply pipeline, manager, rollback, hooks, singbox installer
+│   ├── api/                # axum server, handlers, auth middleware
+│   ├── monitor/            # system/interface/traffic/lease/connection monitoring
+│   └── auth/               # JWT + password hashing
+└── web/                    # Svelte 5 SPA; dist/ embedded in binary
 ```
 
 ## Tech Stack
