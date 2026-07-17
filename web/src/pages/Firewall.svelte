@@ -57,7 +57,7 @@
   }
 
   function emptyNftSet() {
-    return { name: '', set_type: 'ipv4_addr', elements: '', interval: false, comment: '' };
+    return { name: '', set_type: 'ipv4_addr', elements: '', interval: true, comment: '' };
   }
 
   function ruleToPayload(form: any) {
