@@ -25,6 +25,7 @@
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
     "axios": "^1.18.0",
-    "chart.js": "^4.5.1"
+    "chart.js": "^4.5.1",
+    "uplot": "^1.6.32"
   }
 }

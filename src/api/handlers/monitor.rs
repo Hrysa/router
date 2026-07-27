@@ -22,7 +22,7 @@ pub async fn get_system_monitor() -> Json<Value> {
     }))
 }
 
-/// GET /api/monitor/interfaces — list system network interfaces from /sys/class/net
+/// GET /api/monitor/interfaces — list system network interfaces with live details
 pub async fn get_interface_monitor() -> Json<Value> {
     let interfaces = list_system_interfaces();
     Json(json!({
@@ -30,8 +30,18 @@ pub async fn get_interface_monitor() -> Json<Value> {
     }))
 }
 
+#[derive(serde::Serialize)]
+struct InterfaceDetail {
+    name: String,
+    up: bool,
+    mac: String,
+    mtu: u64,
+    rx_bytes: u64,
+    tx_bytes: u64,
+}
+
 /// List network interface names from /sys/class/net/, skipping loopback and virtual.
-fn list_system_interfaces() -> Vec<String> {
+fn list_system_interfaces() -> Vec<InterfaceDetail> {
     let mut ifaces = Vec::new();
     if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
         for entry in entries.flatten() {
@@ -39,11 +49,43 @@ fn list_system_interfaces() -> Vec<String> {
             if name == "lo" || name.starts_with("veth") || name.starts_with("virbr") {
                 continue;
             }
-            ifaces.push(name);
+
+            let path = entry.path();
+            let up = std::fs::read_to_string(path.join("operstate"))
+                .ok()
+                .map(|s| s.trim().eq_ignore_ascii_case("up"))
+                .unwrap_or(false);
+            let mac = std::fs::read_to_string(path.join("address"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            let mtu = std::fs::read_to_string(path.join("mtu"))
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
+            let rx_bytes = read_iface_stat(&name, "rx_bytes");
+            let tx_bytes = read_iface_stat(&name, "tx_bytes");
+
+            ifaces.push(InterfaceDetail {
+                name,
+                up,
+                mac,
+                mtu,
+                rx_bytes,
+                tx_bytes,
+            });
         }
     }
-    ifaces.sort();
+    ifaces.sort_by(|a, b| a.name.cmp(&b.name));
     ifaces
+}
+
+fn read_iface_stat(iface: &str, stat: &str) -> u64 {
+    let path = format!("/sys/class/net/{}/statistics/{}", iface, stat);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// GET /api/monitor/traffic/:iface — traffic stats (placeholder)

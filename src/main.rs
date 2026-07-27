@@ -1,6 +1,7 @@
 mod api;
 mod auth;
 mod config;
+mod metrics;
 mod monitor;
 mod renderer;
 mod service;
@@ -133,6 +134,10 @@ async fn main() -> anyhow::Result<()> {
     // Run after_start hooks
     service::hooks::run_hooks("after_start", &config.hooks.after_start).await?;
 
+    // Install the in-memory metrics recorder and start the interface/firewall collector.
+    let metrics = crate::metrics::RouterdMetrics::new();
+    metrics.install()?;
+
     // Ensure a JWT secret exists for API authentication.
     let jwt_secret = api::handlers::auth::ensure_jwt_secret(&config_store).await?;
 
@@ -143,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
         config_path,
         tls_cert: args.tls_cert.map(std::path::PathBuf::from),
         tls_key: args.tls_key.map(std::path::PathBuf::from),
+        metrics,
     };
     api::server::run(server_config, jwt_secret).await?;
 

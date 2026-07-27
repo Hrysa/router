@@ -69,6 +69,8 @@ nftables = { version = "0.6.3", features = ["tokio"] }
 
 # MIME types for SPA serving
 mime_guess = "2"
+metrics = "0.24.6"
+metrics-util = "0.20.4"
 
 [dev-dependencies]
 tokio-test = "0.4"

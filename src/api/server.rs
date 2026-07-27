@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::api::handlers;
 use crate::api::middleware::auth::{require_auth, AuthState};
 use crate::config::ConfigStore;
+use crate::metrics::RouterdMetrics;
 
 #[derive(Embed)]
 #[folder = "web/dist/"]
@@ -21,6 +22,7 @@ pub struct AppState {
     pub config: Arc<ConfigStore>,
     pub config_path: PathBuf,
     pub auth: AuthState,
+    pub metrics: Arc<RouterdMetrics>,
 }
 
 pub struct ServerConfig {
@@ -29,6 +31,7 @@ pub struct ServerConfig {
     pub config_path: PathBuf,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
+    pub metrics: Arc<RouterdMetrics>,
 }
 
 pub async fn run(cfg: ServerConfig, jwt_secret: Arc<String>) -> anyhow::Result<()> {
@@ -36,6 +39,7 @@ pub async fn run(cfg: ServerConfig, jwt_secret: Arc<String>) -> anyhow::Result<(
         config: Arc::new(cfg.config_store),
         config_path: cfg.config_path,
         auth: AuthState { jwt_secret },
+        metrics: cfg.metrics,
     };
 
     // Public routes: login and static SPA assets (login page must be reachable).
@@ -175,6 +179,15 @@ pub async fn run(cfg: ServerConfig, jwt_secret: Arc<String>) -> anyhow::Result<(
         .route(
             "/api/service/:name/restart",
             post(handlers::service::restart_service),
+        )
+        // Metrics endpoints (uPlot-compatible)
+        .route(
+            "/api/metrics",
+            get(handlers::metrics::get_metrics),
+        )
+        .route(
+            "/api/metrics/current",
+            get(handlers::metrics::get_current_metrics),
         )
         // Monitor endpoints
         .route(

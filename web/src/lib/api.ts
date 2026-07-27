@@ -247,6 +247,16 @@ export async function getLeases() {
   return data;
 }
 
+export async function getMetrics() {
+  const { data } = await api.get('/metrics');
+  return data;
+}
+
+export async function getCurrentMetrics() {
+  const { data } = await api.get('/metrics/current');
+  return data;
+}
+
 // ── nftables Sets CRUD ──────────────────────────────────────────────────────
 
 export async function listNftSets() {

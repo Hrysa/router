@@ -1,28 +1,47 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getSystemMonitor, getInterfaces, getLeases } from '../lib/api';
+  import { getSystemMonitor, getInterfaces, getLeases, getMetrics } from '../lib/api';
   import { notify } from '../lib/stores';
+  import UPlotChart from '../lib/UPlotChart.svelte';
 
   let system = $state<any>(null);
   let interfaces = $state<any[]>([]);
   let leases = $state<any[]>([]);
+  let metrics = $state<any>(null);
   let loading = $state(true);
 
-  onMount(async () => {
-    try {
-      const [systemData, ifaceData, leaseData] = await Promise.all([
-        getSystemMonitor(),
-        getInterfaces(),
-        getLeases(),
-      ]);
-      system = systemData;
-      interfaces = ifaceData.interfaces || [];
-      leases = leaseData.leases || [];
-    } catch (e) {
-      notify('error', 'Failed to load monitoring data');
-    } finally {
-      loading = false;
+  onMount(() => {
+    let interval: ReturnType<typeof setInterval>;
+
+    async function load() {
+      try {
+        const [systemData, ifaceData, leaseData, metricsData] = await Promise.all([
+          getSystemMonitor(),
+          getInterfaces(),
+          getLeases(),
+          getMetrics(),
+        ]);
+        system = systemData;
+        interfaces = ifaceData.interfaces || [];
+        leases = leaseData.leases || [];
+        metrics = metricsData;
+      } catch (e) {
+        notify('error', 'Failed to load monitoring data');
+      } finally {
+        loading = false;
+      }
     }
+
+    load();
+    interval = setInterval(async () => {
+      try {
+        metrics = await getMetrics();
+      } catch (e) {
+        // silently fail background poll
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
   });
 
   function formatBytes(bytes: number): string {
@@ -31,6 +50,112 @@
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  function formatBitsPerSec(bps: number | null | undefined): string {
+    if (bps == null || Number.isNaN(bps) || bps === 0) return '0 bps';
+    const k = 1000;
+    const sizes = ['bps', 'Kbps', 'Mbps', 'Gbps'];
+    const i = Math.min(Math.floor(Math.log(bps) / Math.log(k)), sizes.length - 1);
+    return parseFloat((bps / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  const ifaceColors = [
+    '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4',
+  ];
+
+  const ifaceChart = $derived(buildIfaceChart(metrics));
+  const firewallChart = $derived(buildFirewallChart(metrics));
+
+  function buildIfaceChart(data: any): { options: any; data: any } | null {
+    if (!data?.timestamps?.length) return null;
+
+    const names = Object.keys(data.interfaces || {}).sort();
+    const timestamps = data.timestamps;
+
+    const series: any[] = [{
+      label: 'Time',
+      value: (_u: any, v: number | null | undefined) =>
+        v == null || Number.isNaN(v) ? '-' : new Date(v * 1000).toLocaleTimeString(),
+    }];
+    const aligned: any[] = [timestamps];
+
+    names.forEach((name, idx) => {
+      const color = ifaceColors[idx % ifaceColors.length];
+      const s = data.interfaces[name];
+      series.push({
+        label: `${name} RX`,
+        stroke: color,
+        width: 1.5,
+        value: (_u: any, v: number) => formatBitsPerSec(v),
+      });
+      series.push({
+        label: `${name} TX`,
+        stroke: color,
+        width: 1.5,
+        dash: [4, 4],
+        value: (_u: any, v: number) => formatBitsPerSec(v),
+      });
+      aligned.push(s.rx_bps.map((v: number) => v * 8));
+      aligned.push(s.tx_bps.map((v: number) => v * 8));
+    });
+
+    return {
+      options: {
+        title: 'Interface Traffic',
+        width: 800,
+        height: 300,
+        series,
+        axes: [
+          { label: 'Time', values: (_u: any, vals: number[]) => vals.map((v) => new Date(v * 1000).toLocaleTimeString()) },
+          { label: 'Throughput', values: (_u: any, vals: number[]) => vals.map(formatBitsPerSec) },
+        ],
+        scales: { x: { time: true }, y: {} },
+      },
+      data: aligned,
+    };
+  }
+
+  function buildFirewallChart(data: any): { options: any; data: any } | null {
+    if (!data?.timestamps?.length) return null;
+
+    const ids = Object.keys(data.firewall || {}).sort((a, b) => parseInt(a) - parseInt(b));
+    const timestamps = data.timestamps;
+
+    const series: any[] = [{
+      label: 'Time',
+      value: (_u: any, v: number | null | undefined) =>
+        v == null || Number.isNaN(v) ? '-' : new Date(v * 1000).toLocaleTimeString(),
+    }];
+    const aligned: any[] = [timestamps];
+
+    ids.forEach((id, idx) => {
+      const color = ifaceColors[idx % ifaceColors.length];
+      const s = data.firewall[id];
+      series.push({
+        label: `[${id}] ${s.chain}`,
+        stroke: color,
+        width: 1.5,
+        value: (_u: any, v: number | null | undefined) =>
+          v == null || Number.isNaN(v) ? '-' : `${v.toFixed(0)} pkt/s`,
+      });
+      aligned.push(s.packets_per_sec);
+    });
+
+    return {
+      options: {
+        title: 'Firewall Traffic',
+        width: 800,
+        height: 300,
+        series,
+        axes: [
+          { label: 'Time', values: (_u: any, vals: number[]) => vals.map((v) => new Date(v * 1000).toLocaleTimeString()) },
+          { label: 'Packets/s' },
+        ],
+        scales: { x: { time: true }, y: {} },
+      },
+      data: aligned,
+    };
   }
 </script>
 
@@ -52,6 +177,28 @@
           <div class="text-xl font-semibold">{system?.uptime_human || '-'}</div>
         </div>
       </div>
+    </section>
+
+    <section class="mb-6">
+      <h3 class="h4 mb-3">Interface Traffic</h3>
+      {#if ifaceChart}
+        <div class="card p-2">
+          <UPlotChart data={ifaceChart.data} options={ifaceChart.options} />
+        </div>
+      {:else}
+        <p class="text-surface-500 italic">No traffic data yet</p>
+      {/if}
+    </section>
+
+    <section class="mb-6">
+      <h3 class="h4 mb-3">Firewall Traffic</h3>
+      {#if firewallChart}
+        <div class="card p-2">
+          <UPlotChart data={firewallChart.data} options={firewallChart.options} />
+        </div>
+      {:else}
+        <p class="text-surface-500 italic">No firewall data yet</p>
+      {/if}
     </section>
 
     <section class="mb-6">
