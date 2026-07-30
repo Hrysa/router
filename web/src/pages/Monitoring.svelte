@@ -1,12 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getSystemMonitor, getInterfaces, getLeases, getMetrics } from '../lib/api';
+  import { getSystemMonitor, getInterfaces, getMetrics } from '../lib/api';
   import { notify } from '../lib/stores';
   import UPlotChart from '../lib/UPlotChart.svelte';
 
   let system = $state<any>(null);
   let interfaces = $state<any[]>([]);
-  let leases = $state<any[]>([]);
   let metrics = $state<any>(null);
   let loading = $state(true);
 
@@ -15,15 +14,13 @@
 
     async function load() {
       try {
-        const [systemData, ifaceData, leaseData, metricsData] = await Promise.all([
+        const [systemData, ifaceData, metricsData] = await Promise.all([
           getSystemMonitor(),
           getInterfaces(),
-          getLeases(),
           getMetrics(),
         ]);
         system = systemData;
         interfaces = ifaceData.interfaces || [];
-        leases = leaseData.leases || [];
         metrics = metricsData;
       } catch (e) {
         notify('error', 'Failed to load monitoring data');
@@ -231,34 +228,6 @@
                   <td>{iface.mtu}</td>
                   <td>{formatBytes(iface.rx_bytes)}</td>
                   <td>{formatBytes(iface.tx_bytes)}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-      {/if}
-    </section>
-
-    <section>
-      <h3 class="h4 mb-3">DHCP Leases</h3>
-      {#if leases.length === 0}
-        <p class="text-surface-500 italic">No active leases</p>
-      {:else}
-        <div class="table-wrap">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>IP</th>
-                <th>MAC</th>
-                <th>Hostname</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each leases as lease}
-                <tr>
-                  <td class="font-mono">{lease.ip}</td>
-                  <td class="font-mono text-sm">{lease.mac}</td>
-                  <td>{lease.hostname || '-'}</td>
                 </tr>
               {/each}
             </tbody>
