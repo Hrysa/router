@@ -38,7 +38,7 @@ fn detect_os() -> &'static str {
 }
 
 /// Get the latest sing-box version from GitHub API (including RC/alpha/beta).
-async fn get_latest_version() -> Result<String> {
+async fn get_latest_version(arch: &str) -> Result<String> {
     let client = reqwest::Client::new();
     let resp = client
         .get("https://api.github.com/repos/SagerNet/sing-box/releases")
@@ -70,7 +70,7 @@ async fn get_latest_version() -> Result<String> {
                 assets.iter().any(|a| {
                     a["name"]
                         .as_str()
-                        .map(|n| n.contains("linux-amd64") && n.ends_with(".tar.gz"))
+                        .map(|n| n.ends_with(&format!("-linux-{}.tar.gz", arch)))
                         .unwrap_or(false)
                 })
             })
@@ -82,7 +82,7 @@ async fn get_latest_version() -> Result<String> {
         }
     }
 
-    anyhow::bail!("no sing-box release found with linux-amd64 asset");
+    anyhow::bail!("no sing-box release found with linux-{} asset", arch);
 }
 
 /// Download and install sing-box binary.
@@ -91,7 +91,7 @@ pub async fn install() -> Result<()> {
     let os = detect_os();
 
     tracing::info!("detecting latest sing-box version");
-    let version = get_latest_version().await?;
+    let version = get_latest_version(arch).await?;
     tracing::info!(version = %version, arch = %arch, "downloading sing-box");
 
     // Asset naming: sing-box-{version}-{os}-{arch}.tar.gz
@@ -104,7 +104,9 @@ pub async fn install() -> Result<()> {
     tracing::info!(url = %url, "downloading sing-box");
 
     // Download to /tmp
-    let download_path = format!("/tmp/{}", filename);
+    let staged = crate::service::files::StagedDirectory::new()?;
+    let download_path = staged.path().join(&filename);
+    let download_path = download_path.to_string_lossy().to_string();
     let status = Command::new("curl")
         .args(["-fSL", "-o", &download_path, &url])
         .status()
@@ -116,9 +118,9 @@ pub async fn install() -> Result<()> {
     }
 
     // Extract binary from tarball
-    let tmp_extract = "/tmp/sing-box-extract";
-    let _ = std::fs::remove_dir_all(tmp_extract);
-    std::fs::create_dir_all(tmp_extract)?;
+    let extract_path = staged.path().join("extract");
+    std::fs::create_dir(&extract_path)?;
+    let tmp_extract = extract_path.to_str().context("invalid staging path")?;
 
     let status = Command::new("tar")
         .args(["xzf", &download_path, "-C", tmp_extract])
@@ -135,24 +137,20 @@ pub async fn install() -> Result<()> {
     let binary_dir = format!("sing-box-{}-{}-{}", version, os, arch);
     let extracted_binary = format!("{}/{}/sing-box", tmp_extract, binary_dir);
 
-    if Path::new(&extracted_binary).exists() {
-        std::fs::copy(&extracted_binary, "/usr/local/bin/sing-box")?;
+    let binary_path = if Path::new(&extracted_binary).is_file() {
+        extracted_binary
     } else {
         // Try finding sing-box anywhere in the extracted directory
         let found = find_binary(tmp_extract)?;
-        match found {
-            Some(path) => std::fs::copy(&path, "/usr/local/bin/sing-box")?,
-            None => anyhow::bail!("sing-box binary not found in extracted archive"),
-        };
-    }
+        found.context("sing-box binary not found in extracted archive")?
+    };
 
     // Make executable
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions("/usr/local/bin/sing-box", std::fs::Permissions::from_mode(0o755))?;
+    crate::service::files::atomic_write(Path::new("/usr/local/bin/sing-box"), &std::fs::read(binary_path)?, 0o755)?;
 
     // Create systemd service file
     std::fs::create_dir_all("/etc/sing-box")?;
-    std::fs::write("/etc/systemd/system/sing-box.service", SINGBOX_SERVICE)?;
+    crate::service::files::atomic_write(Path::new("/etc/systemd/system/sing-box.service"), SINGBOX_SERVICE.as_bytes(), 0o644)?;
 
     // Reload systemd
     let status = Command::new("systemctl")
@@ -176,10 +174,6 @@ pub async fn install() -> Result<()> {
         tracing::warn!("systemctl enable sing-box failed");
     }
 
-    // Cleanup
-    let _ = std::fs::remove_file(&download_path);
-    let _ = std::fs::remove_dir_all(tmp_extract);
-
     tracing::info!(version = %version, "sing-box installed successfully");
     Ok(())
 }
@@ -188,6 +182,9 @@ pub async fn install() -> Result<()> {
 fn find_binary(dir: &str) -> Result<Option<String>> {
     let entries = std::fs::read_dir(dir).context("failed to read directory")?;
     for entry in entries.flatten() {
+        if entry.file_type()?.is_symlink() {
+            continue;
+        }
         let path = entry.path();
         if path.is_dir() {
             if let Some(found) = find_binary(&path.to_string_lossy())? {

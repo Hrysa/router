@@ -2,7 +2,7 @@ use crate::config::schema::*;
 use anyhow::Result;
 
 /// A single systemd-networkd config file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkFile {
     /// Filename within /etc/systemd/network/ (e.g. "50-routerd-wan.network").
     pub filename: String,
@@ -21,6 +21,9 @@ pub fn render(config: &Config) -> Result<Vec<NetworkFile>> {
 
     // Render non-VLAN interfaces first
     for iface in &config.interfaces.items {
+        if iface.is_vlan() {
+            continue;
+        }
         if iface.is_wan() {
             render_wan(iface, &mut files);
         } else if iface.is_lan() {
@@ -38,7 +41,7 @@ pub fn render(config: &Config) -> Result<Vec<NetworkFile>> {
                 if let Some(pf) = files.iter_mut().find(|f| f.filename == parent_file) {
                     let vlan_line = format!("VLAN={}\n", iface.name);
                     if !pf.content.contains(&vlan_line) {
-                        pf.content.push_str(&vlan_line);
+                        pf.content = pf.content.replacen("[Network]\n", &format!("[Network]\n{}", vlan_line), 1);
                     }
                 }
             }
@@ -224,30 +227,30 @@ fn render_vlan(iface: &InterfaceConfig, files: &mut Vec<NetworkFile>) {
         content: netdev_content,
     });
 
-    // 2. VLAN network config (static IP)
-    let address = iface.static_config.as_ref()
-        .map(|s| s.address.as_str())
-        .unwrap_or("");
-
-    let network_content = format!(
-        "# Managed by routerd — VLAN {}\n\
-         [Match]\n\
-         Name={}\n\n\
-         [Network]\n\
-         Address={}\n",
-        vlan_id,
-        iface.name,
-        address,
-    );
-    files.push(NetworkFile {
-        filename: format!("{}-{}.network", PREFIX, iface.name),
-        content: network_content,
-    });
+    render_wan(iface, files);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dhcp_vlan_has_one_network_file_and_attaches_in_network_section() {
+        let parent = make_wan(InterfaceMethod::Dhcp, None, Some(DhcpClientConfig {
+            hostname: Some("router".into()),
+        }), None);
+        let mut vlan = make_vlan(10, "eth0", "eth0.10", "192.168.10.1/24");
+        vlan.method = InterfaceMethod::Dhcp;
+        vlan.static_config = None;
+        let config = Config { interfaces: Interfaces { items: vec![parent, vlan] }, ..Default::default() };
+        let files = render(&config).unwrap();
+        let vlan_files: Vec<_> = files.iter().filter(|file| file.filename == "50-routerd-eth0.10.network").collect();
+        assert_eq!(vlan_files.len(), 1);
+        assert!(vlan_files[0].content.contains("DHCP=yes"));
+        let parent_file = files.iter().find(|file| file.filename == "50-routerd-eth0.network").unwrap();
+        assert!(parent_file.content.contains("[Network]\nVLAN=eth0.10\n"));
+        assert!(parent_file.content.find("VLAN=").unwrap() < parent_file.content.find("[DHCPv4]").unwrap());
+    }
 
     fn make_wan(method: InterfaceMethod, pppoe: Option<PppoeConfig>, dhcp: Option<DhcpClientConfig>, static_cfg: Option<StaticConfig>) -> InterfaceConfig {
         InterfaceConfig {

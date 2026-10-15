@@ -33,6 +33,28 @@ pub fn validate(config: &Config) -> Vec<ValidationError> {
                         message: "address is required".into(),
                     });
                 }
+                if !is_valid_cidr(&wg.address) {
+                    errors.push(ValidationError { field: "vpn.wireguard.address".into(), message: "invalid WireGuard address".into() });
+                }
+                if !is_valid_wireguard_key(&wg.private_key) {
+                    errors.push(ValidationError { field: "vpn.wireguard.private_key".into(), message: "invalid WireGuard private key".into() });
+                }
+                if wg.listen_port == 0 {
+                    errors.push(ValidationError { field: "vpn.wireguard.listen_port".into(), message: "port must be non-zero".into() });
+                }
+                for (index, peer) in wg.peers.iter().enumerate().filter(|(_, peer)| peer.enabled) {
+                    let prefix = format!("vpn.wireguard.peers[{}]", index);
+                    validate_single_line(&format!("{}.name", prefix), &peer.name, &mut errors);
+                    if !is_valid_wireguard_key(&peer.public_key) {
+                        errors.push(ValidationError { field: format!("{}.public_key", prefix), message: "invalid WireGuard public key".into() });
+                    }
+                    if peer.allowed_ips.is_empty() || peer.allowed_ips.iter().any(|address| !is_valid_cidr(address)) {
+                        errors.push(ValidationError { field: format!("{}.allowed_ips", prefix), message: "at least one valid allowed IP is required".into() });
+                    }
+                    if let Some(endpoint) = &peer.endpoint {
+                        validate_single_line(&format!("{}.endpoint", prefix), endpoint, &mut errors);
+                    }
+                }
             }
         }
     }
@@ -41,20 +63,46 @@ pub fn validate(config: &Config) -> Vec<ValidationError> {
 }
 
 fn validate_interfaces(config: &Config, errors: &mut Vec<ValidationError>) {
+    let mut names = std::collections::HashSet::new();
     for (i, iface) in config.interfaces.items.iter().enumerate() {
         let prefix = format!("interfaces.items[{}]", i);
 
         // Validate name
-        if iface.name.is_empty() {
+        if !is_valid_interface_name(&iface.name) {
             errors.push(ValidationError {
                 field: format!("{}.name", prefix),
-                message: "interface name cannot be empty".into(),
+                message: "interface name must be 1-15 ASCII letters, digits, '.', '_' or '-', and cannot be '.' or '..'".into(),
             });
+        }
+        if !names.insert(&iface.name) {
+            errors.push(ValidationError { field: format!("{}.name", prefix), message: "duplicate interface name".into() });
+        }
+        for port in &iface.bridge_ports {
+            if !is_valid_interface_name(port) || port == &iface.name {
+                errors.push(ValidationError { field: format!("{}.bridge_ports", prefix), message: "invalid bridge port".into() });
+            }
+        }
+        if let Some(parent) = &iface.parent {
+            if !is_valid_interface_name(parent) || parent == &iface.name {
+                errors.push(ValidationError { field: format!("{}.parent", prefix), message: "invalid parent interface".into() });
+            }
+        }
+        if let Some(vlan_id) = iface.vlan_id {
+            if vlan_id == 0 || vlan_id > 4094 || iface.parent.is_none() {
+                errors.push(ValidationError { field: format!("{}.vlan_id", prefix), message: "VLAN requires an ID from 1 to 4094 and a parent".into() });
+            }
+        }
+        if let Some(dhcp) = &iface.dhcp {
+            if let Some(hostname) = &dhcp.hostname {
+                validate_single_line(&format!("{}.dhcp.hostname", prefix), hostname, errors);
+            }
         }
 
         match iface.method {
             super::schema::InterfaceMethod::Pppoe => {
                 if let Some(pppoe) = &iface.pppoe {
+                    validate_single_line(&format!("{}.pppoe.username", prefix), &pppoe.username, errors);
+                    validate_single_line(&format!("{}.pppoe.password", prefix), &pppoe.password, errors);
                     if !pppoe.username.is_empty() {
                         if pppoe.password.is_empty() {
                             errors.push(ValidationError {
@@ -73,6 +121,11 @@ fn validate_interfaces(config: &Config, errors: &mut Vec<ValidationError>) {
             }
             super::schema::InterfaceMethod::Static => {
                 if let Some(static_cfg) = &iface.static_config {
+                    for dns in &static_cfg.dns {
+                        if !is_valid_ip(dns) {
+                            errors.push(ValidationError { field: format!("{}.static_config.dns", prefix), message: "DNS server must be an IP address".into() });
+                        }
+                    }
                     if !is_valid_cidr(&static_cfg.address) {
                         errors.push(ValidationError {
                             field: format!("{}.static_config.address", prefix),
@@ -93,15 +146,6 @@ fn validate_interfaces(config: &Config, errors: &mut Vec<ValidationError>) {
                     });
                 }
 
-                // VLAN validation
-                if let Some(vlan_id) = iface.vlan_id {
-                    if vlan_id == 0 || vlan_id > 4094 {
-                        errors.push(ValidationError {
-                            field: format!("{}.vlan_id", prefix),
-                            message: "VLAN ID must be between 1 and 4094".into(),
-                        });
-                    }
-                }
             }
             super::schema::InterfaceMethod::Dhcp => {}
         }
@@ -111,6 +155,9 @@ fn validate_interfaces(config: &Config, errors: &mut Vec<ValidationError>) {
 fn validate_dhcp(config: &Config, errors: &mut Vec<ValidationError>) {
     // Validate pools
     for (i, pool) in config.dhcp.pools.iter().enumerate() {
+        if super::schema::lease_duration_seconds(&pool.lease_time).is_none() {
+            errors.push(ValidationError { field: format!("dhcp.pools[{}].lease_time", i), message: "lease time must be positive seconds or an s/m/h/d duration, with a maximum of 2147483647 seconds".into() });
+        }
         if pool.name.is_empty() {
             errors.push(ValidationError {
                 field: format!("dhcp.pools[{}].name", i),
@@ -267,7 +314,11 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
         .input
         .iter()
         .chain(config.firewall.rules.forward.iter());
+    let mut rule_ids = std::collections::HashSet::new();
     for rule in all_rules {
+        if !rule_ids.insert(rule.id) {
+            errors.push(ValidationError { field: "firewall.rules".into(), message: format!("duplicate rule ID: {}", rule.id) });
+        }
         if rule.interfaces.is_empty() {
             errors.push(ValidationError {
                 field: format!("firewall.rules.*.{}.interfaces", rule.comment),
@@ -290,10 +341,10 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
                     message: "tproxy_port is required and must be non-zero for tproxy rules".into(),
                 });
             }
-            if rule.mark.is_none() {
+            if rule.mark.is_none() || matches!(rule.mark, Some(0 | 253 | 254 | 255)) {
                 errors.push(ValidationError {
                     field: format!("firewall.rules.*.{}.mark", rule.comment),
-                    message: "mark is required for tproxy rules".into(),
+                    message: "mark is required and cannot use reserved routing tables 0, 253, 254 or 255".into(),
                 });
             }
         }
@@ -311,6 +362,22 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
 }
 
 // ── Validation helpers ────────────────────────────────────────────────────────
+
+fn validate_single_line(field: &str, value: &str, errors: &mut Vec<ValidationError>) {
+    if value.chars().any(char::is_control) {
+        errors.push(ValidationError { field: field.into(), message: "control characters are not allowed".into() });
+    }
+}
+
+fn is_valid_interface_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 15 && name != "." && name != ".."
+        && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn is_valid_wireguard_key(key: &str) -> bool {
+    key.len() == 44 && key.ends_with('=')
+        && key[..43].bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'))
+}
 
 fn is_valid_ip(s: &str) -> bool {
     s.parse::<IpAddr>().is_ok()
@@ -453,5 +520,50 @@ mod tests {
         assert!(is_valid_cidr("::1/128"));
         assert!(!is_valid_cidr("192.168.1.0/33"));
         assert!(!is_valid_cidr("not-an-ip/24"));
+    }
+
+    #[test]
+    fn rejects_interface_paths_and_directive_injection() {
+        for name in ["../../etc/evil", "eth0\n[Network]", "eth0*", "", "abcdefghijklmnop"] {
+            let mut config = default_config();
+            config.interfaces.items.push(InterfaceConfig {
+                name: name.into(), method: InterfaceMethod::Dhcp, ..Default::default()
+            });
+            assert!(validate(&config).iter().any(|error| error.field.ends_with(".name")), "{}", name);
+        }
+        let mut config = default_config();
+        config.interfaces.items.push(InterfaceConfig {
+            name: "eth0".into(), method: InterfaceMethod::Pppoe,
+            pppoe: Some(PppoeConfig { username: "user".into(), password: "secret\nplugin /tmp/evil.so".into(), ..Default::default() }),
+            ..Default::default()
+        });
+        assert!(validate(&config).iter().any(|error| error.field.ends_with("pppoe.password")));
+    }
+
+    #[test]
+    fn rejects_wireguard_hook_injection() {
+        let mut config = default_config();
+        config.vpn = Some(Vpn { wireguard: Some(WireguardConfig {
+            enabled: true, private_key: "key\nPostUp = touch /tmp/evil".into(),
+            address: "10.0.0.1/24\nPostUp = false".into(), listen_port: 51820, peers: vec![],
+        }) });
+        let errors = validate(&config);
+        assert!(errors.iter().any(|error| error.field == "vpn.wireguard.private_key"));
+        assert!(errors.iter().any(|error| error.field == "vpn.wireguard.address"));
+    }
+
+    #[test]
+    fn rejects_reserved_tproxy_routing_tables_and_duplicate_ids() {
+        for mark in [0, 253, 254, 255] {
+            let mut config = default_config();
+            let rule: FirewallRule = serde_json::from_value(serde_json::json!({
+                "id": 1, "action": "tproxy", "interfaces": ["eth0"], "mark": mark, "tproxy_port": 7893
+            })).unwrap();
+            config.firewall.rules.input.push(rule.clone());
+            config.firewall.rules.forward.push(rule);
+            let errors = validate(&config);
+            assert!(errors.iter().any(|error| error.field.ends_with(".mark")));
+            assert!(errors.iter().any(|error| error.message.contains("duplicate rule ID")));
+        }
     }
 }

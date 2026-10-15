@@ -1,6 +1,5 @@
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 use crate::api::error::ApiError;
 use crate::api::server::AppState;
@@ -32,17 +31,16 @@ pub async fn login(
 ) -> Result<Json<LoginResponse>, ApiError> {
     let config = state.config.get().await;
 
-    // If no password is configured, authentication is disabled.
     if config.auth.password_hash.is_empty() {
-        let token = jwt::generate_token(&config.auth.jwt_secret)
-            .map_err(|e| ApiError::Internal(e.into()))?;
-        return Ok(Json(LoginResponse { token }));
+        return Err(ApiError::Unauthorized);
     }
 
-    let valid = password::verify_password(&req.password,
-        &config.auth.password_hash,
-    )
-    .map_err(|e| ApiError::Internal(e.into()))?;
+    if req.password.len() > 72 {
+        return Err(ApiError::Unauthorized);
+    }
+    let hash = config.auth.password_hash.clone();
+    let valid = tokio::task::spawn_blocking(move || password::verify_password(&req.password, &hash))
+        .await.map_err(|error| ApiError::Internal(error.into()))??;
 
     if !valid {
         return Err(ApiError::Unauthorized);
@@ -65,18 +63,19 @@ pub async fn setup(
     State(state): State<AppState>,
     Json(req): Json<SetupRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let config = state.config.get().await;
 
     if !config.auth.password_hash.is_empty() {
         return Err(ApiError::Conflict("password is already configured".into()));
     }
 
-    if req.password.is_empty() {
-        return Err(ApiError::BadRequest("password cannot be empty".into()));
+    if req.password.is_empty() || req.password.len() > 72 {
+        return Err(ApiError::BadRequest("password must contain between 1 and 72 UTF-8 bytes".into()));
     }
 
-    let hash = password::hash_password(&req.password)
-        .map_err(|e| ApiError::Internal(e.into()))?;
+    let hash = tokio::task::spawn_blocking(move || password::hash_password(&req.password))
+        .await.map_err(|error| ApiError::Internal(error.into()))??;
 
     let mut new_config = config;
     new_config.auth.password_hash = hash;
@@ -87,10 +86,10 @@ pub async fn setup(
 }
 
 /// Ensure the config has a JWT secret, generating one if missing.
-pub async fn ensure_jwt_secret(config_store: &ConfigStore) -> anyhow::Result<Arc<String>> {
+pub async fn ensure_jwt_secret(config_store: &ConfigStore) -> anyhow::Result<()> {
     let config = config_store.get().await;
     if !config.auth.jwt_secret.is_empty() {
-        return Ok(Arc::new(config.auth.jwt_secret.clone()));
+        return Ok(());
     }
 
     let secret = uuid::Uuid::new_v4().to_string();
@@ -98,5 +97,42 @@ pub async fn ensure_jwt_secret(config_store: &ConfigStore) -> anyhow::Result<Arc
     new_config.auth.jwt_secret = secret.clone();
     config_store.set(new_config).await?;
 
-    Ok(Arc::new(secret))
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::api::middleware::auth::AuthState;
+    use crate::config::store::tests::TestStore;
+
+    pub(crate) fn state(config: std::sync::Arc<ConfigStore>) -> AppState {
+        AppState {
+            config: config.clone(),
+            config_path: std::path::PathBuf::from("unused"),
+            auth: AuthState { config },
+            metrics: crate::metrics::RouterdMetrics::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn unconfigured_password_cannot_issue_tokens() {
+        let fixture = TestStore::new();
+        ensure_jwt_secret(&fixture.store).await.unwrap();
+        let result = login(State(state(fixture.store.clone())), Json(LoginRequest { password: String::new() })).await;
+        assert!(matches!(result, Err(ApiError::Unauthorized)));
+    }
+
+    #[tokio::test]
+    async fn simultaneous_setup_only_allows_one_password() {
+        let fixture = TestStore::new();
+        ensure_jwt_secret(&fixture.store).await.unwrap();
+        let application = state(fixture.store.clone());
+        let (first, second) = tokio::join!(
+            setup(State(application.clone()), Json(SetupRequest { password: "first".into() })),
+            setup(State(application), Json(SetupRequest { password: "second".into() })),
+        );
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+        assert!(matches!(first, Err(ApiError::Conflict(_))) || matches!(second, Err(ApiError::Conflict(_))));
+    }
 }

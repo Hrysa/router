@@ -16,6 +16,7 @@ pub async fn replace_config(
     State(state): State<AppState>,
     Json(new_config): Json<Config>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let errors = crate::config::validator::validate(&new_config);
     if !errors.is_empty() {
         return Err(errors.into());
@@ -40,6 +41,7 @@ pub async fn create_interface(
     State(state): State<AppState>,
     Json(iface): Json<InterfaceConfig>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     // Check for duplicate name
@@ -62,6 +64,7 @@ pub async fn update_interface(
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(iface): Json<InterfaceConfig>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     if iface.name != name {
@@ -88,6 +91,7 @@ pub async fn delete_interface(
     State(state): State<AppState>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     let len = config.interfaces.items.len();
@@ -105,6 +109,7 @@ pub async fn patch_firewall(
     State(state): State<AppState>,
     Json(patch): Json<Firewall>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
     config.firewall = patch;
     let errors = crate::config::validator::validate(&config);
@@ -134,6 +139,7 @@ pub async fn add_firewall_rule(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     Json(mut rule): Json<FirewallRule>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     // Determine chain: explicit query param > oif-based detection > default input
@@ -144,12 +150,7 @@ pub async fn add_firewall_rule(
     };
 
     // Auto-generate ID
-    let max_id = config.firewall.rules.input.iter()
-        .chain(config.firewall.rules.forward.iter())
-        .map(|r| r.id)
-        .max()
-        .unwrap_or(0);
-    rule.id = max_id + 1;
+    rule.id = config.firewall.rules.next_id();
 
     if chain == "forward" {
         config.firewall.rules.forward.push(rule.clone());
@@ -172,6 +173,10 @@ pub async fn update_firewall_rule(
     axum::extract::Path(id): axum::extract::Path<u32>,
     Json(rule): Json<FirewallRule>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
+    if rule.id != id {
+        return Err(ApiError::BadRequest("rule ID cannot be changed".into()));
+    }
     let mut config = state.config.get().await;
 
     // Find and update in input rules
@@ -204,6 +209,7 @@ pub async fn delete_firewall_rule(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<u32>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     let input_len = config.firewall.rules.input.len();
@@ -234,6 +240,7 @@ pub async fn move_firewall_rule(
         .and_then(|v| v.as_str())
         .ok_or_else(|| ApiError::BadRequest("missing 'direction' field".into()))?;
 
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     // Try input chain first
@@ -300,6 +307,7 @@ pub async fn add_port_forward(
     State(state): State<AppState>,
     Json(mut rule): Json<PortForward>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     // Auto-generate ID
@@ -307,7 +315,7 @@ pub async fn add_port_forward(
         .map(|r| r.id)
         .max()
         .unwrap_or(0);
-    rule.id = max_id + 1;
+    rule.id = max_id.checked_add(1).ok_or_else(|| ApiError::Conflict("port forward ID space exhausted".into()))?;
 
     config.firewall.nat.port_forward.push(rule.clone());
     let errors = crate::config::validator::validate(&config);
@@ -325,6 +333,10 @@ pub async fn update_port_forward(
     axum::extract::Path(id): axum::extract::Path<u32>,
     Json(rule): Json<PortForward>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
+    if rule.id != id {
+        return Err(ApiError::BadRequest("rule ID cannot be changed".into()));
+    }
     let mut config = state.config.get().await;
 
     if let Some(existing) = config
@@ -351,6 +363,7 @@ pub async fn delete_port_forward(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<u32>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     let len = config.firewall.nat.port_forward.len();
@@ -376,6 +389,7 @@ pub async fn add_nft_set(
     State(state): State<AppState>,
     Json(set): Json<NftSet>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     if config.firewall.sets.iter().any(|s| s.name == set.name) {
@@ -393,6 +407,7 @@ pub async fn update_nft_set(
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(set): Json<NftSet>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     if let Some(existing) = config.firewall.sets.iter_mut().find(|s| s.name == name) {
@@ -409,6 +424,7 @@ pub async fn delete_nft_set(
     State(state): State<AppState>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     // Check that no rules or port forwards reference this set
@@ -470,6 +486,7 @@ pub async fn patch_dhcp(
     State(state): State<AppState>,
     Json(patch): Json<Dhcp>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
     config.dhcp = patch;
     let errors = crate::config::validator::validate(&config);
@@ -491,6 +508,7 @@ pub async fn add_dhcp_lease(
     State(state): State<AppState>,
     Json(lease): Json<StaticLease>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     if config.dhcp.static_leases.iter().any(|l| l.mac == lease.mac || l.ip == lease.ip) {
@@ -498,6 +516,10 @@ pub async fn add_dhcp_lease(
     }
 
     config.dhcp.static_leases.push(lease.clone());
+    let errors = crate::config::validator::validate(&config);
+    if !errors.is_empty() {
+        return Err(errors.into());
+    }
     state.config.set(config).await?;
     Ok(Json(json!({"status": "ok", "lease": lease})))
 }
@@ -507,6 +529,7 @@ pub async fn delete_dhcp_lease(
     State(state): State<AppState>,
     axum::extract::Path(mac): axum::extract::Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
     let len = config.dhcp.static_leases.len();
@@ -526,6 +549,7 @@ pub async fn patch_hooks(
     State(state): State<AppState>,
     Json(patch): Json<Hooks>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
     config.hooks = patch;
     state.config.set(config).await?;
@@ -548,39 +572,40 @@ pub async fn get_singbox_config() -> Result<Json<Value>, ApiError> {
 
 /// PUT /api/singbox/config — write the sing-box JSONC config file
 pub async fn put_singbox_config(
+    State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let path = "/etc/sing-box/config.jsonc";
     let content = String::from_utf8(body.to_vec())
         .map_err(|e| anyhow::anyhow!("invalid UTF-8: {}", e))?;
 
     // Validate with sing-box check if binary exists
     if let Ok(singbox) = crate::service::manager::find_command("sing-box") {
-        let tmp_path = "/tmp/sing-box-config-staged.jsonc";
-        std::fs::write(tmp_path, &content)
-            .map_err(|e| anyhow::anyhow!("failed to write staged config: {}", e))?;
+        let staged = crate::service::files::StagedFile::new(
+            &std::env::temp_dir(), content.as_bytes(), 0o600,
+        )?;
 
         let output = tokio::process::Command::new(&singbox)
-            .args(["check", "-c", tmp_path])
+            .args(["check", "-c"])
+            .arg(staged.path())
+            .kill_on_drop(true)
             .output()
             .await;
-
-        let _ = std::fs::remove_file(tmp_path);
 
         match output {
             Ok(o) if !o.status.success() => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 return Err(ApiError::BadRequest(format!("sing-box config validation failed: {}", stderr.trim())));
             }
-            Err(_) => {} // binary not found, skip check
+            Err(error) => return Err(anyhow::anyhow!("failed to validate sing-box config: {}", error).into()),
             _ => {}
         }
     }
 
     std::fs::create_dir_all("/etc/sing-box")
         .map_err(|e| anyhow::anyhow!("failed to create dir: {}", e))?;
-    std::fs::write(path, &content)
-        .map_err(|e| anyhow::anyhow!("failed to write config: {}", e))?;
+    crate::service::files::atomic_write(std::path::Path::new(path), content.as_bytes(), 0o600)?;
 
     Ok(Json(json!({"status": "ok"})))
 }
@@ -599,8 +624,9 @@ pub async fn validate_config(Json(config): Json<Config>) -> Json<Value> {
 
 /// POST /api/config/apply — render and apply all service configs
 pub async fn apply_config(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let prev_config = state.config.get().await;
-    let config = prev_config.clone();
+    let _operation = state.config.lock_operation().await;
+    let prev_config = state.config.get_applied().await;
+    let config = state.config.get().await;
 
     let errors = crate::config::validator::validate(&config);
     if !errors.is_empty() {
@@ -611,12 +637,14 @@ pub async fn apply_config(State(state): State<AppState>) -> Result<Json<Value>, 
     // Use diff-based change detection — config.set() writes config.yml but
     // detect_rendered_changes compares rendered service configs against /etc/ files.
     let result = crate::service::apply::apply(&config, &prev_config, &state.config_path, &service_manager, false).await?;
+    state.config.mark_applied(&config).await;
 
     Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
 }
 
 /// POST /api/config/rollback — rollback to last backup
 pub async fn rollback_config(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let service_manager = crate::service::manager::ServiceManager::new();
     let result =
         crate::service::rollback::rollback(&state.config, &state.config_path, &service_manager).await?;
@@ -646,6 +674,7 @@ pub async fn restore_backup(
     State(state): State<AppState>,
     axum::extract::Path(backup_id): axum::extract::Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let service_manager = crate::service::manager::ServiceManager::new();
     let result =
         crate::service::rollback::rollback_to(&backup_id, &state.config, &state.config_path, &service_manager)
@@ -722,4 +751,39 @@ pub async fn firewall_stats(State(_state): State<AppState>) -> Result<Json<Value
     }
 
     Ok(Json(json!({"stats": stats})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::store::tests::TestStore;
+
+    #[tokio::test]
+    async fn concurrent_interface_creates_preserve_both_changes() {
+        let fixture = TestStore::new();
+        let application = crate::api::handlers::auth::tests::state(fixture.store.clone());
+        let interface = |name: &str| InterfaceConfig {
+            name: name.into(),
+            static_config: Some(StaticConfig { address: "192.168.1.1/24".into(), gateway: String::new(), dns: vec![] }),
+            ..Default::default()
+        };
+        let (first, second) = tokio::join!(
+            create_interface(State(application.clone()), Json(interface("eth1"))),
+            create_interface(State(application), Json(interface("eth2"))),
+        );
+        assert!(first.is_ok());
+        assert!(second.is_ok());
+        assert_eq!(fixture.store.get().await.interfaces.items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn invalid_static_lease_is_rejected_without_saving() {
+        let fixture = TestStore::new();
+        let application = crate::api::handlers::auth::tests::state(fixture.store.clone());
+        let result = add_dhcp_lease(State(application), Json(StaticLease {
+            mac: "invalid".into(), ip: "invalid".into(), hostname: "host".into(),
+        })).await;
+        assert!(matches!(result, Err(ApiError::Validation(_))));
+        assert!(fixture.store.get().await.dhcp.static_leases.is_empty());
+    }
 }

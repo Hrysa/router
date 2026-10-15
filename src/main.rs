@@ -29,17 +29,17 @@ struct Args {
     #[arg(long, default_value = "text")]
     log_format: String,
 
-    /// Allow first-boot initialization when config.yml is missing.
-    /// Without this flag, routerd exits if config.yml does not exist.
+    /// Create config.yml if missing and start the API without changing networking.
+    /// Skips startup apply, offload changes, and hooks even with an existing config.
     #[arg(long)]
     init: bool,
 
     /// Path to TLS certificate (PEM). If set, --tls-key must also be set.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", requires = "tls_key")]
     tls_cert: Option<String>,
 
     /// Path to TLS private key (PEM). If set, --tls-cert must also be set.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", requires = "tls_cert")]
     tls_key: Option<String>,
 
     /// Download and install sing-box from GitHub releases, then exit.
@@ -89,8 +89,7 @@ async fn main() -> anyhow::Result<()> {
     let config_dir = Path::new(&args.config_dir);
     let config_path = config_dir.join("config.yml");
 
-    // If config.yml doesn't exist, run init setup (auto-detect interfaces).
-    // This is only allowed when --init is passed to prevent accidental reconfiguration.
+    // Initialization only writes a draft config; --init also skips startup changes below.
     if !config_path.exists() {
         if args.init {
             tracing::info!("config.yml not found, running init setup");
@@ -115,31 +114,32 @@ async fn main() -> anyhow::Result<()> {
     }
     tracing::info!("config validated");
 
-    // Disable hardware offloads on all physical NICs
-    disable_offloads();
+    if args.init {
+        tracing::info!(
+            "init mode: preserving host networking; review the config and use POST /api/config/apply when ready"
+        );
+    } else {
+        // Normal startup applies the saved config and runs startup hooks.
+        disable_offloads();
+        service::hooks::run_hooks("before_start", &config.hooks.before_start).await?;
 
-    // Run before_start hooks
-    service::hooks::run_hooks("before_start", &config.hooks.before_start).await?;
+        let service_manager = service::manager::ServiceManager::new();
+        let apply_result =
+            service::apply::apply(&config, &config, &config_path, &service_manager, false).await?;
+        tracing::info!(
+            services = ?apply_result.services_restarted,
+            "config applied"
+        );
 
-    // Apply config on startup — change detection determines what needs restart.
-    // On first boot (no config on disk), all services are started.
-    // On subsequent boots, only changed services are restarted.
-    let service_manager = service::manager::ServiceManager::new();
-    let apply_result = service::apply::apply(&config, &config, &config_path, &service_manager, false).await?;
-    tracing::info!(
-        services = ?apply_result.services_restarted,
-        "config applied"
-    );
-
-    // Run after_start hooks
-    service::hooks::run_hooks("after_start", &config.hooks.after_start).await?;
+        service::hooks::run_hooks("after_start", &config.hooks.after_start).await?;
+    }
 
     // Install the in-memory metrics recorder and start the interface/firewall collector.
     let metrics = crate::metrics::RouterdMetrics::new();
     metrics.install()?;
 
     // Ensure a JWT secret exists for API authentication.
-    let jwt_secret = api::handlers::auth::ensure_jwt_secret(&config_store).await?;
+    api::handlers::auth::ensure_jwt_secret(&config_store).await?;
 
     // Start API server
     let server_config = api::server::ServerConfig {
@@ -150,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
         tls_key: args.tls_key.map(std::path::PathBuf::from),
         metrics,
     };
-    api::server::run(server_config, jwt_secret).await?;
+    api::server::run(server_config).await?;
 
     Ok(())
 }
@@ -191,5 +191,17 @@ fn disable_offloads() {
                 tracing::warn!(nic = %name, error = %e, "ethtool not available");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tls_requires_both_certificate_and_key() {
+        assert!(Args::try_parse_from(["routerd", "--tls-cert", "cert.pem"]).is_err());
+        assert!(Args::try_parse_from(["routerd", "--tls-key", "key.pem"]).is_err());
+        assert!(Args::try_parse_from(["routerd", "--tls-cert", "cert.pem", "--tls-key", "key.pem"]).is_ok());
     }
 }

@@ -1,7 +1,8 @@
-use axum::{extract::Path, Json};
+use axum::{extract::{Path, State}, Json};
 use serde_json::{json, Value};
 
 use crate::api::error::ApiError;
+use crate::api::server::AppState;
 use crate::service::manager::{Service, ServiceManager};
 
 /// GET /api/services — list all services with status
@@ -41,7 +42,8 @@ pub async fn get_service_status(Path(name): Path<String>) -> Result<Json<Value>,
 }
 
 /// POST /api/service/:name/start — start service
-pub async fn start_service(Path(name): Path<String>) -> Result<Json<Value>, ApiError> {
+pub async fn start_service(State(state): State<AppState>, Path(name): Path<String>) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let service = parse_service(&name)?;
     let manager = ServiceManager::new();
     manager.start(service).await?;
@@ -49,7 +51,8 @@ pub async fn start_service(Path(name): Path<String>) -> Result<Json<Value>, ApiE
 }
 
 /// POST /api/service/:name/stop — stop service
-pub async fn stop_service(Path(name): Path<String>) -> Result<Json<Value>, ApiError> {
+pub async fn stop_service(State(state): State<AppState>, Path(name): Path<String>) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let service = parse_service(&name)?;
     let manager = ServiceManager::new();
     manager.stop(service).await?;
@@ -57,7 +60,8 @@ pub async fn stop_service(Path(name): Path<String>) -> Result<Json<Value>, ApiEr
 }
 
 /// POST /api/service/:name/restart — restart service
-pub async fn restart_service(Path(name): Path<String>) -> Result<Json<Value>, ApiError> {
+pub async fn restart_service(State(state): State<AppState>, Path(name): Path<String>) -> Result<Json<Value>, ApiError> {
+    let _operation = state.config.lock_operation().await;
     let service = parse_service(&name)?;
     let manager = ServiceManager::new();
     manager.restart(service).await?;
@@ -66,12 +70,24 @@ pub async fn restart_service(Path(name): Path<String>) -> Result<Json<Value>, Ap
 
 fn parse_service(name: &str) -> Result<Service, ApiError> {
     match name.to_lowercase().as_str() {
-        "dhcpd" | "kea-dhcp4" | "dhcp" => Ok(Service::Dhcpd),
+        "dhcpd" | "kea-dhcp4" | "kea-dhcp4-server" | "dhcp" => Ok(Service::Dhcpd),
         "pppd" | "ppp" | "pppoe" => Ok(Service::Pppd),
         "networking" | "network" | "systemd-networkd" => Ok(Service::Networking),
-        "wireguard" | "wg" | "wg0" => Ok(Service::Wireguard),
+        "wireguard" | "wg" | "wg0" | "wg-quick@wg0" => Ok(Service::Wireguard),
         "sing-box" | "singbox" => Ok(Service::SingBox),
         "vnstat" => Ok(Service::Vnstat),
         _ => Err(ApiError::NotFound(format!("unknown service: {}", name))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_every_name_returned_by_service_listing() {
+        for service in Service::all() {
+            assert_eq!(parse_service(service.systemd_name()).unwrap(), *service);
+        }
     }
 }

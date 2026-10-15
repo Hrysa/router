@@ -25,7 +25,7 @@ pub struct Config {
 /// Authentication configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Auth {
-    /// Bcrypt hash of the admin password. Empty means authentication is disabled.
+    /// Bcrypt hash of the admin password. Empty allows setup only, not API access.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub password_hash: String,
     /// Secret used to sign JWTs. Generated automatically if empty.
@@ -244,6 +244,19 @@ fn default_lease_time() -> String {
     "12h".into()
 }
 
+pub fn lease_duration_seconds(value: &str) -> Option<u32> {
+    let value = value.trim();
+    let (number, multiplier) = match value.as_bytes().last()? {
+        b's' => (&value[..value.len() - 1], 1),
+        b'm' => (&value[..value.len() - 1], 60),
+        b'h' => (&value[..value.len() - 1], 3600),
+        b'd' => (&value[..value.len() - 1], 86400),
+        _ => (value, 1),
+    };
+    let seconds = number.parse::<u32>().ok()?.checked_mul(multiplier)?;
+    (seconds > 0 && seconds <= u32::MAX / 2).then_some(seconds)
+}
+
 fn default_domain() -> String {
     "lan.local".into()
 }
@@ -371,6 +384,16 @@ pub struct FirewallRules {
     pub input: Vec<FirewallRule>,
     #[serde(default)]
     pub forward: Vec<FirewallRule>,
+}
+
+impl FirewallRules {
+    pub fn next_id(&self) -> u32 {
+        self.input.iter()
+            .chain(self.forward.iter())
+            .map(|rule| rule.id)
+            .max()
+            .unwrap_or(0).saturating_add(1)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -2,7 +2,7 @@
 
 ## System Overview
 
-routerd is a Linux router daemon that manages network services through a unified YAML configuration. It uses **systemd-networkd** for interface management and generates all service configs from a single `config.yml`.
+routerd is a Linux router daemon that manages network services through a unified YAML configuration. It uses **systemd-networkd** for interface management. Router-managed service files are generated from `config.yml`; sing-box's JSONC file is managed separately by the user.
 
 ```
 ┌─────────────┐        ┌────────────────────────────────────────┐
@@ -10,7 +10,7 @@ routerd is a Linux router daemon that manages network services through a unified
 └─────────────┘  REST  │                                        │
                        │  ┌──────────┐  ┌───────────────────┐   │
 ┌─────────────┐        │  │ Config   │  │  Config Renderer  │   │
-│  CLI tool   │───────→│  │ Store    │  │                   │   │
+│ API client  │───────→│  │ Store    │  │                   │   │
 │ (optional)  │  REST  │  │ (YAML)   │  │                   │   │
 └─────────────┘        │  └────┬─────┘  └────────┬──────────┘   │
                        │       │                 │              │
@@ -66,14 +66,16 @@ External systems and data sources that routerd manages.
 | Firewall | `nftables` | — (JSON applied directly, no file) | `nft -j -c -f` |
 | Network | `systemd-networkd` | `/etc/systemd/network/50-routerd-*.network` | — |
 
-#### Optional (via `enabled` field)
+#### Conditional services
 
 | Component | systemd unit | Config file | `enabled` field |
 |-----------|--------------|-------------|-----------------|
-| DHCP | `kea-dhcp4` | `/etc/kea/kea-dhcp4.conf` | `dhcp.enabled` |
+| DHCP | `kea-dhcp4-server` | `/etc/kea/kea-dhcp4.conf` | Any `dhcp.pools[].enabled` |
 | VPN | `wg-quick@wg0` | `/etc/wireguard/wg0.conf` | `vpn.wireguard.enabled` |
-| PPPoE | `pppd` | `/etc/ppp/peers/isp` | `interfaces.wan.method` (implicit) |
-| Traffic | `vnstat` | — | `monitoring.vnstat` |
+| PPPoE | `pppd` | `/etc/ppp/peers/isp`, `/etc/ppp/chap-secrets` | WAN `interfaces.items[].method: pppoe` with nonempty username |
+| Proxy | `sing-box` | `/etc/sing-box/config.jsonc` (user-managed) | Start/restart attempted on every apply |
+
+Disabled DHCP/PPP/WireGuard services are stopped if active, not started from stale on-disk configuration. `vnstat` has manual API service controls, but `monitoring.vnstat` is not wired into the apply pipeline.
 
 ### systemd-networkd Config Files
 
@@ -87,7 +89,7 @@ All managed files use `50-routerd-` prefix for cleanup:
 | `50-routerd-br-lan.network` | Bridge static IP |
 | `50-routerd-br-lan-slave.network` | Bridge member ports |
 | `50-routerd-vlan<id>.netdev` | VLAN device definition |
-| `50-routerd-vlan<id>.network` | VLAN static IP |
+| `50-routerd-vlan<id>.network` | VLAN DHCP/static configuration (filename uses interface name) |
 
 ---
 
@@ -102,7 +104,7 @@ Core modules that transform config into service configurations and manage their 
 | `schema.rs` | Serde structs for `config.yml` |
 | `store.rs` | Atomic read/write with backup |
 | `validator.rs` | Validation logic for config values |
-| `diff.rs` | Change detection between old/new config |
+| `diff.rs` | ChangeSet flags; rendered-content comparison is in `service/apply.rs` |
 | `init.rs` | First-run auto-detect setup |
 
 ### Renderers (`src/renderer/`)
@@ -117,7 +119,6 @@ Transform abstract config into concrete service files:
 | `ppp.rs` | `/etc/ppp/peers/isp` |
 | `wireguard.rs` | `/etc/wireguard/wg0.conf` |
 | `sysctl.rs` | `/etc/sysctl.d/90-routerd.conf` |
-| `sysctl.rs` | Sysctl settings |
 
 ### Service Management (`src/service/`)
 
@@ -126,7 +127,8 @@ Transform abstract config into concrete service files:
 | `apply.rs` | Render → validate → write → restart pipeline |
 | `manager.rs` | Systemd lifecycle (start/stop/restart) |
 | `hooks.rs` | User-defined lifecycle hooks |
-| `rollback.rs` | Config rollback on failure |
+| `rollback.rs` | Explicit restore of a saved backup, followed by forced apply |
+| `files.rs` | Exclusive random staging files/directories, atomic replacement, permissions |
 | `singbox.rs` | Download/install sing-box binary |
 
 ### Auth (`src/auth/`)
@@ -155,41 +157,43 @@ User-facing interfaces and monitoring.
 | `middleware/auth.rs` | JWT validation middleware |
 | `error.rs` | API error types |
 
-### Monitoring (`src/monitor/`)
+### Monitoring
 
-| Module | Purpose |
-|--------|---------|
-| `interfaces.rs` | Live interface state |
-| `traffic.rs` | Bandwidth statistics |
-| `leases.rs` | DHCP lease info |
-| `connections.rs` | Active connections |
-| `system.rs` | CPU, memory, uptime |
+`src/metrics/mod.rs` samples interface and firewall counters every five seconds and retains up to 360 samples (30 minutes). `/api/metrics` supplies aligned series for the uPlot charts; `/api/metrics/current` returns the latest sample.
+
+System/interface details and Kea CSV lease reads live in `src/api/handlers/monitor.rs` and `src/api/handlers/status.rs`. `/api/monitor/traffic` and `/api/monitor/connections` are placeholders. The files in `src/monitor/` are currently module stubs, not separate collectors.
 
 ### CLI (`src/main.rs`)
 
-Entry point with clap argument parsing. Orchestrates startup: parse args → init → load config → apply → start API server.
+Entry point with clap argument parsing. Orchestrates startup: parse args → init if needed → load config → apply unless `--init` → start API server. With `--init`, offload changes and startup hooks are also skipped.
 
 ---
 
 ## Apply Pipeline
 
 ```
-routerd startup
-    → load config.yml
-    → validate (only enabled components)
-    → detect changes (diff old vs new)
-    → render changed configs
-    → syntax check (nft -j -c -f required, others optional)
-    → write configs (atomic: write .tmp, rename)
-    → restart changed services
+normal startup / POST /api/config/apply / explicit backup restore
+    → validate schema
+    → render all service configs
+    → stage syntax checks: nft -j -c -f required; kea-dhcp4 -t if installed
+    → detect rendered content differences against disk and last successful in-memory config
+    → write changed configs (exclusive random staging file + rename)
+    → start enabled services if inactive; reload/restart changed services
         - nftables: nft -j -f <staged JSON> (not systemctl, no file persisted)
         - systemd-networkd: networkctl reload (fallback: systemctl restart)
         - others: systemctl restart
+    → reconcile IPv4 TPROXY policy routing
 ```
+
+API mutations, service controls, apply, and restore share an operation lock. Read-modify-write requests cannot overwrite one another, and service applies cannot overlap. Individual config saves also hold the store's write lock through disk replacement and in-memory publication. Backups use unique timestamp/UUID IDs, and restore rejects IDs containing path separators.
+
+Only nftables and optional Kea checks invoke external syntax validators before apply. PPP, WireGuard, networkd, and sysctl rely on `src/config/validator.rs`. Service command failures, sysctl failures, and TPROXY setup failures propagate instead of reporting a successful apply. A missing/unconfigured sing-box remains an optional warning; if its config file exists, start/restart failures propagate.
+
+There is no automatic transactional rollback after failure: earlier file writes and service changes may persist. The in-memory last-successful snapshot is not a durable applied-state journal; it is initialized from the saved configuration at process startup. Keep console access and review configuration before applying network changes.
 
 ### nftables Layout
 
-The renderer emits a single JSON ruleset (`flush ruleset` + add objects) with four tables:
+The renderer emits a single JSON transaction. It resets only the four table names it owns (add-if-absent, delete, then recreate as needed), preserving all other tables. `inet filter` is always recreated with the configured policies, even when there are no explicit rules. The other tables are conditional:
 
 | Table | Chains | Purpose |
 |-------|--------|---------|
@@ -202,26 +206,33 @@ Address conventions: `@setname` references a named set (protocol picked from the
 
 Every rule's comment is `[<id>] <comment>` — `/api/firewall/stats` parses the ID out of `nft -j list chain` output to attach per-rule counters.
 
+Do not share these four tables with other tools: their contents are replaced on every apply. TPROXY marks select dedicated routing tables; reserved IDs 0, 253, 254, and 255 are rejected. Cleanup removes the matching local route/rule, not the entire routing table.
+
+### Authentication and secrets
+
+Public routes are `/api/auth/status`, `/api/auth/setup`, `/api/auth/login`, and SPA assets. Setup succeeds only while the password hash is empty, under the same operation lock as configuration updates. An unset password does not grant API access or allow token issuance. Bcrypt work runs off the async executor; password input is limited to bcrypt's 72-byte maximum.
+
+JWTs expire after 24 hours. Middleware reads the current password state and signing secret on every request, so restoring/replacing a secret takes effect immediately. The management API exposes secrets to authenticated administrators, and hooks execute shell commands by design; it is not a multi-user or restricted-privilege API.
+
+`config.yml`, backups, PPP peers/secrets, WireGuard files, and sing-box API writes use mode `0600`. Temporary secret files start private and are removed on normal cleanup. Kea staging files use `0644` for its privilege-dropping validation. TLS is optional, but the certificate and key CLI flags must be specified together; first-time setup requires a trusted management connection.
+
 ## Init Setup (first run)
 
-When `config.yml` doesn't exist:
+When `config.yml` doesn't exist, `--init` is required:
 
 ```
-routerd -c /etc/router
+routerd --init -c /etc/router
     │
-    ├── check systemd-networkd.service exists (bail if not)
     ├── detect interfaces from /sys/class/net/
     ├── detect WAN: interface with default route
-    ├── detect LAN: bridge or group ethernet ports
+    ├── select first other interface as draft LAN (192.168.1.1/24)
     ├── detect WAN method: DHCP lease file → dhcp, else static IP → static
-    ├── disable networking.service (ifupdown)
-    ├── write .network/.netdev files to /etc/systemd/network/
-    ├── enable + start systemd-networkd.service
-    ├── write config.yml
-    └── apply full config
-        - nftables: empty accept-all ruleset (init mode)
-        - other components: skip if not installed
+    ├── write draft config.yml (keep existing file if present)
+    ├── skip offload changes, startup hooks, and automatic apply
+    └── start web UI/API for review and explicit apply
 ```
+
+Initialization leaves network managers, service configs, addresses, routes, and firewall rules untouched. This also holds for repeated starts with `--init`. Starting without `--init` uses the normal apply pipeline above. The generated configuration is a router draft, not a complete import of the existing network setup.
 
 ## Repository Layout
 
@@ -238,7 +249,7 @@ router/
 │   ├── api/                # axum server, handlers, auth middleware
 │   ├── monitor/            # system/interface/traffic/lease/connection monitoring
 │   └── auth/               # JWT + password hashing
-└── web/                    # Svelte 5 SPA; dist/ embedded in binary
+└── web/                    # React SPA; dist/ embedded in binary
 ```
 
 ## Tech Stack
@@ -255,4 +266,14 @@ router/
 | Network backend | systemd-networkd |
 | Firewall | nftables |
 | Embedded assets | rust-embed |
-| SPA | Svelte 5 + Vite + TypeScript |
+| SPA | React + Vite + TypeScript + React Query; Yacd-meta-inspired UI |
+
+## Web UI
+
+The frontend reimplements the Yacd-meta React shell, responsive sidebar, card-based overview, and light/dark theme approach for routerd. It does not include the reference project's Clash controllers, backend selector, or service worker. The ignored `git-repos/Yacd-meta/` checkout is a design reference only; production builds do not depend on it.
+
+`web/src/App.tsx` provides hash navigation, authentication gating, live Apply confirmation, and theme preferences. Remote data uses React Query and an abortable same-origin fetch client; logout, token changes, and HTTP 401 clear cached configuration and unmount sensitive editors. Editor drafts remain independent of background queries. Password limits use UTF-8 byte counts, and raw sing-box JSONC is never reformatted by the frontend.
+
+The overview and monitoring pages graph a selected interface rather than summing overlapping bridge/physical counters. `rx_bps` and `tx_bps` from the API are bytes/s. Configuration editors save without applying; startup hooks activate on normal startup. Service controls and backup restores are explicitly confirmed live operations. The pending-saves indicator only records this browser's actions, not authoritative configuration drift.
+
+Frontend regression tests live in `web/tests/` and use Bun's built-in runner. Build assets with Bun before compiling Rust; `web/dist/` is generated and ignored. See `web/README.md` for commands and `web/THIRD_PARTY_NOTICES.md` for reference attribution.

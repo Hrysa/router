@@ -11,32 +11,29 @@ use std::collections::HashSet;
 pub fn render(config: &Config) -> Result<String> {
     let mut doc = NftablesDocument { objects: Vec::new() };
 
-    doc.objects.push(flush_ruleset());
+    for (family, name) in [
+        (NfFamily::INet, "filter"),
+        (NfFamily::IP, "nat"),
+        (NfFamily::INet, "mangle"),
+        (NfFamily::INet, "blackhole"),
+    ] {
+        doc.objects.push(add_table(family, name));
+        doc.objects.push(NfObject::CmdObject(NfCmd::Delete(NfListObject::Table(Table {
+            family,
+            name: Cow::Borrowed(name),
+            handle: None,
+        }))));
+    }
 
-    let has_rules = !config.firewall.rules.input.is_empty()
-        || !config.firewall.rules.forward.is_empty()
-        || !config.firewall.nat.masquerade.is_empty()
-        || !config.firewall.nat.port_forward.is_empty()
-        || !config.firewall.blackhole.is_empty()
-        || !config.firewall.sets.is_empty()
-        || has_tproxy_rules(config);
-
-    if has_rules {
-        render_filter_table(config, &mut doc);
-
-        if needs_nat(config) {
-            render_nat_table(config, &mut doc);
-        }
-
-        if has_tproxy_rules(config) {
-            render_tproxy_table(config, &mut doc);
-        }
-
-        if !config.firewall.blackhole.is_empty() {
-            render_blackhole(config, &mut doc);
-        }
-    } else {
-        render_empty_ruleset(&mut doc);
+    render_filter_table(config, &mut doc);
+    if needs_nat(config) {
+        render_nat_table(config, &mut doc);
+    }
+    if has_tproxy_rules(config) {
+        render_tproxy_table(config, &mut doc);
+    }
+    if !config.firewall.blackhole.is_empty() {
+        render_blackhole(config, &mut doc);
     }
 
     let nftables = Nftables {
@@ -48,37 +45,6 @@ pub fn render(config: &Config) -> Result<String> {
 /// Internal accumulator for nftables objects.
 struct NftablesDocument {
     objects: Vec<NfObject<'static>>,
-}
-
-fn flush_ruleset() -> NfObject<'static> {
-    NfObject::CmdObject(NfCmd::Flush(FlushObject::Ruleset(None)))
-}
-
-fn render_empty_ruleset(doc: &mut NftablesDocument) {
-    doc.objects.push(add_table(NfFamily::INet, "filter"));
-
-    for chain_name in &["input", "forward", "output"] {
-        doc.objects.push(add_chain(
-            NfFamily::INet,
-            "filter",
-            chain_name,
-            Some(NfChainType::Filter),
-            Some(hook_from_name(chain_name)),
-            Some(0),
-            Some(NfChainPolicy::Accept),
-        ));
-    }
-}
-
-fn hook_from_name(name: &str) -> NfHook {
-    match name {
-        "input" => NfHook::Input,
-        "forward" => NfHook::Forward,
-        "output" => NfHook::Output,
-        "prerouting" => NfHook::Prerouting,
-        "postrouting" => NfHook::Postrouting,
-        _ => NfHook::Input,
-    }
 }
 
 fn add_table(family: NfFamily, name: &'static str) -> NfObject<'static> {
@@ -484,9 +450,7 @@ fn build_rule_stmts(config: &Config, rule: &FirewallRule, proto: Option<&str>) -
     }
 
     // Counter
-    if rule.log {
-        // log includes counter
-    } else if rule.counter {
+    if rule.counter {
         stmts.push(Statement::Counter(stmt::Counter::Anonymous(None)));
     }
 
@@ -1181,8 +1145,24 @@ mod tests {
         // Should have: flush + 1 table + 3 chains
         let table_count = count_object_type(&val, "table");
         let chain_count = count_object_type(&val, "chain");
-        assert_eq!(table_count, 1, "expected 1 table");
+        assert_eq!(table_count, 5, "expected 4 reset tables and 1 filter table");
         assert_eq!(chain_count, 3, "expected 3 chains (input, forward, output)");
+    }
+
+    #[test]
+    fn empty_rules_preserve_drop_policies_without_flushing_other_tables() {
+        let mut config = Config::default();
+        config.firewall.default_policy.input = "drop".into();
+        config.firewall.default_policy.forward = "drop".into();
+        config.firewall.default_policy.output = "drop".into();
+        let value = render_json(&config);
+        let objects = value["nftables"].as_array().unwrap();
+        assert!(objects.iter().all(|object| object.get("flush").is_none()));
+        let chains: Vec<_> = objects.iter().filter_map(|object| object.get("add")?.get("chain")).collect();
+        assert_eq!(chains.len(), 3);
+        assert!(chains.iter().all(|chain| chain["policy"] == "drop"));
+        let deleted: Vec<_> = objects.iter().filter_map(|object| object.get("delete")?.get("table")).collect();
+        assert_eq!(deleted.len(), 4);
     }
 
     #[test]

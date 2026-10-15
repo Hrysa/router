@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::time::Duration;
 use tokio::process::Command;
+use crate::service::files::StagedFile;
 
 /// Services managed by routerd.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -77,7 +78,7 @@ impl ServiceManager {
     pub async fn status(&self, service: Service) -> Result<ServiceStatus> {
         let output = Command::new("systemctl")
             .args(["is-active", service.systemd_name()])
-            .output()
+            .timeout_run(self.apply_timeout)
             .await?;
 
         let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -112,7 +113,7 @@ impl ServiceManager {
     pub async fn start(&self, service: Service) -> Result<()> {
         let output = Command::new("systemctl")
             .args(["start", service.systemd_name()])
-            .output()
+            .timeout_run(self.apply_timeout)
             .await?;
 
         if !output.status.success() {
@@ -132,7 +133,7 @@ impl ServiceManager {
     pub async fn stop(&self, service: Service) -> Result<()> {
         let output = Command::new("systemctl")
             .args(["stop", service.systemd_name()])
-            .output()
+            .timeout_run(self.apply_timeout)
             .await?;
 
         if !output.status.success() {
@@ -152,7 +153,7 @@ impl ServiceManager {
     pub async fn restart(&self, service: Service) -> Result<()> {
         let output = Command::new("systemctl")
             .args(["restart", service.systemd_name()])
-            .output()
+            .timeout_run(self.apply_timeout)
             .await?;
 
         if !output.status.success() {
@@ -168,10 +169,7 @@ impl ServiceManager {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let status = self.status(service).await?;
         if !status.active {
-            tracing::warn!(
-                service = service.display_name(),
-                "service not active after restart"
-            );
+            anyhow::bail!("{} is not active after restart", service.display_name());
         }
 
         tracing::info!(service = service.display_name(), "service restarted");
@@ -185,7 +183,7 @@ impl ServiceManager {
     pub async fn networkctl_reload(&self) -> Result<()> {
         let output = Command::new("networkctl")
             .arg("reload")
-            .output()
+            .timeout_run(self.apply_timeout)
             .await?;
 
         if !output.status.success() {
@@ -199,19 +197,14 @@ impl ServiceManager {
 
     /// Apply nftables rules via JSON file (`nft -j -f <path>`).
     pub async fn apply_nftables_json(&self, json: &str) -> Result<()> {
-        let staged = format!(
-            "/tmp/routerd-nft-{}.json",
-            nix::unistd::getuid()
-        );
-        std::fs::write(&staged, json)?;
+        let staged = StagedFile::new(&std::env::temp_dir(), json.as_bytes(), 0o600)?;
 
         let nft = find_command("nft")?;
         let output = Command::new(&nft)
-            .args(["-j", "-f", &staged])
+            .args(["-j", "-f"])
+            .arg(staged.path())
             .timeout_run(self.apply_timeout)
             .await?;
-
-        let _ = std::fs::remove_file(&staged);
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -224,25 +217,20 @@ impl ServiceManager {
 
     /// Validate nftables config syntax via JSON file (`nft -j -c -f <path>`).
     pub async fn check_nftables_json(&self, json: &str) -> Result<()> {
-        let staged = format!(
-            "/tmp/routerd-nft-check-{}.json",
-            nix::unistd::getuid()
-        );
-        std::fs::write(&staged, json)?;
+        let staged = StagedFile::new(&std::env::temp_dir(), json.as_bytes(), 0o600)?;
 
         let nft = find_command("nft")?;
         let output = Command::new(&nft)
-            .args(["-j", "-c", "-f", &staged])
-            .output()
+            .args(["-j", "-c", "-f"])
+            .arg(staged.path())
+            .timeout_run(self.apply_timeout)
             .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let _ = std::fs::remove_file(&staged);
             anyhow::bail!("nftables JSON syntax check failed: {}", stderr.trim());
         }
 
-        let _ = std::fs::remove_file(&staged);
         Ok(())
     }
 
@@ -256,7 +244,7 @@ impl ServiceManager {
         tracing::debug!(path = config_path, bin = %kea, "running kea-dhcp4 syntax check");
         let output = Command::new(&kea)
             .args(["-t", config_path])
-            .output()
+            .timeout_run(self.apply_timeout)
             .await?;
 
         if !output.status.success() {
@@ -272,7 +260,7 @@ impl ServiceManager {
     async fn get_pid(&self, service: Service) -> Result<u32> {
         let output = Command::new("systemctl")
             .args(["show", service.systemd_name(), "--property=MainPID"])
-            .output()
+            .timeout_run(self.apply_timeout)
             .await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);

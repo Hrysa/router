@@ -19,7 +19,8 @@ pub fn render(config: &Config) -> Result<String> {
             continue;
         }
 
-        let lease_secs = parse_duration(&pool.lease_time);
+        let lease_secs = lease_duration_seconds(&pool.lease_time)
+            .ok_or_else(|| anyhow::anyhow!("invalid lease time for pool '{}': {}", pool.name, pool.lease_time))?;
 
         // Gateway: pool override or default LAN IP
         let gateway = if pool.gateway.is_empty() {
@@ -131,22 +132,6 @@ fn is_ip_in_cidr(ip: &str, cidr: &str) -> bool {
 
     let mask = if prefix_len == 0 { 0 } else { !0u32 << (32 - prefix_len) };
     (ip_u32 & mask) == (net_u32 & mask)
-}
-
-/// Parse duration string like "12h", "30m", "1d" to seconds.
-fn parse_duration(s: &str) -> u32 {
-    let s = s.trim();
-    if let Some(num_str) = s.strip_suffix('h') {
-        num_str.parse::<u32>().unwrap_or(12) * 3600
-    } else if let Some(num_str) = s.strip_suffix('m') {
-        num_str.parse::<u32>().unwrap_or(30) * 60
-    } else if let Some(num_str) = s.strip_suffix('d') {
-        num_str.parse::<u32>().unwrap_or(1) * 86400
-    } else if let Some(num_str) = s.strip_suffix('s') {
-        num_str.parse::<u32>().unwrap_or(3600)
-    } else {
-        s.parse::<u32>().unwrap_or(43200) // default 12h
-    }
 }
 
 /// Extract IP from CIDR notation.
@@ -292,10 +277,14 @@ mod tests {
 
     #[test]
     fn test_parse_duration() {
-        assert_eq!(parse_duration("12h"), 43200);
-        assert_eq!(parse_duration("30m"), 1800);
-        assert_eq!(parse_duration("1d"), 86400);
-        assert_eq!(parse_duration("60s"), 60);
-        assert_eq!(parse_duration("3600"), 3600);
+        assert_eq!(lease_duration_seconds("12h"), Some(43200));
+        assert_eq!(lease_duration_seconds("30m"), Some(1800));
+        assert_eq!(lease_duration_seconds("1d"), Some(86400));
+        assert_eq!(lease_duration_seconds("60s"), Some(60));
+        assert_eq!(lease_duration_seconds("3600"), Some(3600));
+        assert_eq!(lease_duration_seconds("4294967295d"), None);
+        assert_eq!(lease_duration_seconds("4294967295"), None);
+        assert_eq!(lease_duration_seconds("0"), None);
+        assert_eq!(lease_duration_seconds("invalid"), None);
     }
 }

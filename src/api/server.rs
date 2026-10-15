@@ -34,11 +34,12 @@ pub struct ServerConfig {
     pub metrics: Arc<RouterdMetrics>,
 }
 
-pub async fn run(cfg: ServerConfig, jwt_secret: Arc<String>) -> anyhow::Result<()> {
+pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
+    let config = Arc::new(cfg.config_store);
     let state = AppState {
-        config: Arc::new(cfg.config_store),
+        config: config.clone(),
         config_path: cfg.config_path,
-        auth: AuthState { jwt_secret },
+        auth: AuthState { config },
         metrics: cfg.metrics,
     };
 

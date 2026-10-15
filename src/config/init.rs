@@ -2,31 +2,12 @@ use super::schema::*;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-/// Run first-time init setup when config.yml doesn't exist.
-///
-/// 1. Checks systemd-networkd is available
-/// 2. Detects current network interfaces from the system
-/// 3. Disables networking.service (ifupdown) if present
-/// 4. Writes systemd-networkd .network/.netdev files to /etc/systemd/network/
-/// 5. Enables systemd-networkd.service (after config is in place)
-/// 6. Writes config.yml with detected interface config
+/// Generate a first-time config without changing the host's networking.
+/// The detected config is a draft for review before an explicit apply.
 pub fn run(config_dir: &Path) -> Result<Config> {
-    tracing::info!("config not found, running init setup");
+    tracing::info!("config not found, generating initial config without applying it");
 
-    // Check systemd-networkd is available
-    check_systemd_networkd()?;
-
-    // Detect interfaces from running system
     let config = detect_config()?;
-
-    // Manage service transition
-    disable_networking_service();
-
-    // Write systemd-networkd config files BEFORE enabling the service
-    write_networkd_configs(&config)?;
-
-    // Now enable and start systemd-networkd (config files are already in place)
-    enable_systemd_networkd()?;
 
     // Write config.yml
     let config_path = config_dir.join("config.yml");
@@ -34,62 +15,11 @@ pub fn run(config_dir: &Path) -> Result<Config> {
         .with_context(|| format!("failed to create config dir: {}", config_dir.display()))?;
 
     let yaml = serde_yaml::to_string(&config).context("failed to serialize config")?;
-    std::fs::write(&config_path, &yaml)
+    crate::service::files::atomic_write(&config_path, yaml.as_bytes(), 0o600)
         .with_context(|| format!("failed to write config: {}", config_path.display()))?;
 
     tracing::info!("init config written to {}", config_path.display());
     Ok(config)
-}
-
-/// Verify systemd-networkd binary/unit exists.
-fn check_systemd_networkd() -> Result<()> {
-    let output = std::process::Command::new("systemctl")
-        .args(["cat", "systemd-networkd.service"])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            tracing::debug!("systemd-networkd.service unit found");
-            Ok(())
-        }
-        _ => {
-            anyhow::bail!(
-                "systemd-networkd.service not found on this system. \
-                 Install systemd and ensure systemd-networkd is available."
-            );
-        }
-    }
-}
-
-/// Write systemd-networkd .network/.netdev files to /etc/systemd/network/.
-fn write_networkd_configs(config: &Config) -> Result<()> {
-    use crate::renderer::interfaces;
-
-    let files = interfaces::render(config)?;
-    let network_dir = "/etc/systemd/network";
-    std::fs::create_dir_all(network_dir)
-        .with_context(|| format!("failed to create {}", network_dir))?;
-
-    // Remove any existing routerd-managed files
-    if let Ok(entries) = std::fs::read_dir(network_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("50-routerd-") {
-                std::fs::remove_file(entry.path())?;
-                tracing::debug!(file = %name, "removed old network config");
-            }
-        }
-    }
-
-    // Write new .network/.netdev files
-    for file in &files {
-        let path = format!("{}/{}", network_dir, file.filename);
-        std::fs::write(&path, &file.content)
-            .with_context(|| format!("failed to write {}", path))?;
-        tracing::info!(file = %file.filename, "wrote network config");
-    }
-
-    Ok(())
 }
 
 /// Detect current network configuration from the running system.
@@ -163,7 +93,14 @@ fn detect_config() -> Result<Config> {
         ..Default::default()
     };
 
-    let config = Config {
+    Ok(build_config(wan, lan, masq_oif))
+}
+
+fn build_config(wan: InterfaceConfig, lan: InterfaceConfig, masq_oif: String) -> Config {
+    let wan_name = wan.name.clone();
+    let lan_name = lan.name.clone();
+
+    let mut config = Config {
         interfaces: Interfaces {
             items: vec![wan, lan],
         },
@@ -247,7 +184,17 @@ fn detect_config() -> Result<Config> {
         ..Config::default()
     };
 
-    Ok(config)
+    let initial_rules = std::mem::take(&mut config.firewall.rules);
+    for mut rule in initial_rules.input {
+        rule.id = config.firewall.rules.next_id();
+        config.firewall.rules.input.push(rule);
+    }
+    for mut rule in initial_rules.forward {
+        rule.id = config.firewall.rules.next_id();
+        config.firewall.rules.forward.push(rule);
+    }
+
+    config
 }
 
 /// List network interfaces from /sys/class/net/.
@@ -395,37 +342,54 @@ fn gethostname() -> String {
         .unwrap_or_else(|_| "router".to_string())
 }
 
-/// Disable networking.service (ifupdown) if it exists and is enabled.
-fn disable_networking_service() {
-    let check = std::process::Command::new("systemctl")
-        .args(["cat", "networking.service"])
-        .output();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
 
-    match check {
-        Ok(o) if o.status.success() => {
-            tracing::info!("disabling networking.service (ifupdown)");
-            let _ = std::process::Command::new("systemctl")
-                .args(["disable", "--now", "networking.service"])
-                .output();
-        }
-        _ => {
-            tracing::debug!("networking.service not found, skipping disable");
-        }
+    #[test]
+    fn test_initial_firewall_rule_ids() {
+        let config = build_config(
+            InterfaceConfig {
+                name: "eth0".into(),
+                ..Default::default()
+            },
+            InterfaceConfig {
+                name: "eth1".into(),
+                ..Default::default()
+            },
+            "eth0".into(),
+        );
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: Config = serde_yaml::from_str(&yaml).unwrap();
+        let rules = &restored.firewall.rules;
+        let ids: Vec<u32> = rules.input.iter()
+            .chain(rules.forward.iter())
+            .map(|rule| rule.id)
+            .collect();
+
+        assert!(!ids.is_empty());
+        assert_eq!(ids[0], 1);
+        assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1));
+        assert!(ids.iter().all(|id| *id > 0));
+        assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), ids.len());
+        assert_eq!(restored.firewall.rules, config.firewall.rules);
+        assert_eq!(rules.next_id(), ids.last().unwrap() + 1);
     }
-}
 
-/// Enable and start systemd-networkd.service.
-fn enable_systemd_networkd() -> Result<()> {
-    let output = std::process::Command::new("systemctl")
-        .args(["enable", "--now", "systemd-networkd.service"])
-        .output()
-        .context("failed to run systemctl")?;
+    #[test]
+    fn test_next_firewall_rule_id_uses_max_across_chains() {
+        let mut rules = FirewallRules::default();
+        assert_eq!(rules.next_id(), 1);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("failed to enable systemd-networkd: {}", stderr.trim());
+        rules.input.push(serde_yaml::from_str("id: 12\naction: accept").unwrap());
+        rules.forward.push(serde_yaml::from_str("id: 7\naction: accept").unwrap());
+        assert_eq!(rules.next_id(), 13);
+
+        rules.forward[0].id = 20;
+        assert_eq!(rules.next_id(), 21);
+
+        rules.forward.clear();
+        assert_eq!(rules.next_id(), 13);
     }
-
-    tracing::info!("systemd-networkd.service enabled and started");
-    Ok(())
 }

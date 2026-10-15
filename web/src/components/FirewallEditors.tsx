@@ -1,0 +1,333 @@
+import { checked, Editor, integer, text } from './Editor';
+import type { Field, Values } from './Editor';
+import type { FirewallRule, NftSet, PortForward } from '../lib/types';
+import { formatPort, list, parsePort } from '../lib/format';
+
+const ingress: Field = {
+  name: 'interfaces',
+  label: 'Ingress interfaces',
+  type: 'interface',
+  multiple: true,
+  required: true,
+  placeholder: 'eth0, br0',
+  hint: 'Choose interfaces or enter comma-separated names, not display labels.',
+};
+const comment: Field = {
+  name: 'comment',
+  label: 'Description',
+  placeholder: 'What is this rule for?',
+};
+const enabled: Field = { name: 'enabled', label: 'Enabled', type: 'toggle' };
+const invert: Field[] = [
+  { name: 'interfaces_invert', label: 'Invert ingress match', type: 'toggle' },
+  { name: 'saddr_invert', label: 'Invert source match', type: 'toggle' },
+  { name: 'daddr_invert', label: 'Invert destination match', type: 'toggle' },
+];
+const ruleFields: Field[] = [
+  comment,
+  {
+    name: 'action',
+    label: 'Action',
+    type: 'select',
+    options: ['accept', 'drop', 'reject', 'tproxy'],
+  },
+  ingress,
+  {
+    name: 'oif',
+    label: 'Egress interface',
+    type: 'interface',
+    placeholder: 'Any',
+  },
+  { name: 'proto', label: 'Protocols', placeholder: 'tcp, udp (empty = any)' },
+  {
+    name: 'state',
+    label: 'Connection states',
+    placeholder: 'established, related',
+    hint: 'Comma-separated states.',
+  },
+  {
+    name: 'saddr',
+    label: 'Source address / set',
+    placeholder: '192.168.1.0/24 or @trusted',
+  },
+  { name: 'daddr', label: 'Destination address / set', placeholder: 'Any' },
+  { name: 'sport', label: 'Source ports', placeholder: 'Any' },
+  {
+    name: 'dport',
+    label: 'Destination ports',
+    placeholder: '443, 80 or 8000-8080 or @web',
+    hint: 'A port, comma-separated ports, ordered range, or @set.',
+  },
+  { name: 'rate', label: 'Rate limit', placeholder: '10/second' },
+  { name: 'log_prefix', label: 'Log prefix' },
+  {
+    name: 'mark',
+    label: 'TPROXY routing mark',
+    type: 'number',
+    min: 1,
+    max: 4294967295,
+    required: true,
+    when: (values) => values.action === 'tproxy',
+    hint: 'Do not use reserved marks 253, 254 or 255.',
+  },
+  {
+    name: 'tproxy_port',
+    label: 'TPROXY port',
+    type: 'number',
+    min: 1,
+    max: 65535,
+    required: true,
+    when: (values) => values.action === 'tproxy',
+  },
+  enabled,
+  { name: 'counter', label: 'Count packets & bytes', type: 'toggle' },
+  { name: 'log', label: 'Log matching packets', type: 'toggle' },
+  ...invert,
+];
+function ruleInitial(rule?: FirewallRule): Values {
+  return {
+    comment: rule?.comment ?? '',
+    action: rule?.action ?? 'accept',
+    interfaces: rule?.interfaces.join(', ') ?? '',
+    oif: rule?.oif ?? '',
+    proto: rule?.proto?.join(', ') ?? '',
+    state: rule?.state?.join(', ') ?? '',
+    saddr: rule?.saddr ?? '',
+    daddr: rule?.daddr ?? '',
+    sport: formatPort(rule?.sport),
+    dport: formatPort(rule?.dport),
+    rate: rule?.rate ?? '',
+    log_prefix: rule?.log_prefix ?? '',
+    mark: String(rule?.mark ?? 1),
+    tproxy_port: String(rule?.tproxy_port ?? 7893),
+    enabled: rule?.enabled !== false,
+    counter: rule?.counter ?? true,
+    log: rule?.log ?? false,
+    interfaces_invert: rule?.interfaces_invert ?? false,
+    saddr_invert: rule?.saddr_invert ?? false,
+    daddr_invert: rule?.daddr_invert ?? false,
+  };
+}
+export function ruleFromValues(
+  values: Values,
+  original?: FirewallRule,
+): FirewallRule {
+  const action = text(values, 'action') as FirewallRule['action'];
+  const mark =
+    action === 'tproxy' ? integer(values, 'mark', 1, 4294967295) : undefined;
+  if (mark && [253, 254, 255].includes(mark))
+    throw new Error('TPROXY mark cannot be 253, 254 or 255.');
+  return {
+    ...original,
+    id: original?.id ?? 0,
+    action,
+    comment: text(values, 'comment'),
+    interfaces: list(text(values, 'interfaces')),
+    oif: text(values, 'oif') || undefined,
+    proto: text(values, 'proto') ? list(text(values, 'proto')) : undefined,
+    state: text(values, 'state') ? list(text(values, 'state')) : undefined,
+    saddr: text(values, 'saddr') || undefined,
+    daddr: text(values, 'daddr') || undefined,
+    sport: parsePort(text(values, 'sport')),
+    dport: parsePort(text(values, 'dport')),
+    rate: text(values, 'rate') || undefined,
+    log_prefix: text(values, 'log_prefix') || undefined,
+    mark,
+    tproxy_port:
+      action === 'tproxy'
+        ? integer(values, 'tproxy_port', 1, 65535)
+        : undefined,
+    enabled: checked(values, 'enabled'),
+    counter: checked(values, 'counter'),
+    log: checked(values, 'log'),
+    interfaces_invert: checked(values, 'interfaces_invert'),
+    saddr_invert: checked(values, 'saddr_invert'),
+    daddr_invert: checked(values, 'daddr_invert'),
+  };
+}
+export function RuleEditor({
+  rule,
+  chain,
+  save,
+  close,
+}: {
+  rule?: FirewallRule;
+  chain: string;
+  save: (rule: FirewallRule) => Promise<unknown>;
+  close: () => void;
+}) {
+  return (
+    <Editor
+      title={rule ? `Edit rule #${rule.id}` : `Add ${chain} rule`}
+      initial={ruleInitial(rule)}
+      fields={ruleFields}
+      onClose={close}
+      onSave={(values) => save(ruleFromValues(values, rule))}
+    />
+  );
+}
+
+const natFields: Field[] = [
+  comment,
+  {
+    name: 'proto',
+    label: 'Protocol',
+    type: 'select',
+    options: ['tcp', 'udp', 'tcp+udp', 'icmp', 'gre'],
+  },
+  ingress,
+  {
+    name: 'target_port',
+    label: 'WAN destination ports',
+    placeholder: '443 or 8000-8080',
+  },
+  {
+    name: 'target_address',
+    label: 'WAN destination address',
+    placeholder: 'Any',
+  },
+  {
+    name: 'source_address',
+    label: 'Source address filter',
+    placeholder: 'Any',
+  },
+  {
+    name: 'redirect_address',
+    label: 'Forward to address',
+    required: true,
+    placeholder: '192.168.1.10',
+  },
+  {
+    name: 'redirect_port',
+    label: 'Forward to ports',
+    placeholder: 'Keep original port',
+  },
+  enabled,
+  { name: 'interfaces_invert', label: 'Invert ingress match', type: 'toggle' },
+  {
+    name: 'source_address_invert',
+    label: 'Invert source match',
+    type: 'toggle',
+  },
+  {
+    name: 'target_address_invert',
+    label: 'Invert destination match',
+    type: 'toggle',
+  },
+];
+export function NatEditor({
+  rule,
+  save,
+  close,
+}: {
+  rule?: PortForward;
+  save: (rule: PortForward) => Promise<unknown>;
+  close: () => void;
+}) {
+  const initial: Values = {
+    comment: rule?.comment ?? '',
+    proto: rule?.proto ?? 'tcp',
+    interfaces: rule?.interfaces.join(', ') ?? '',
+    target_port: formatPort(rule?.target_port),
+    target_address: rule?.target_address ?? '',
+    source_address: rule?.source_address ?? '',
+    redirect_address: rule?.redirect_address ?? '',
+    redirect_port: formatPort(rule?.redirect_port),
+    enabled: rule?.enabled !== false,
+    interfaces_invert: rule?.interfaces_invert ?? false,
+    source_address_invert: rule?.source_address_invert ?? false,
+    target_address_invert: rule?.target_address_invert ?? false,
+  };
+  return (
+    <Editor
+      title={rule ? `Edit port forward #${rule.id}` : 'Add port forward'}
+      initial={initial}
+      fields={natFields.map((field) =>
+        field.name === 'proto' && rule && !field.options?.includes(rule.proto)
+          ? { ...field, options: [...field.options!, rule.proto] }
+          : field,
+      )}
+      onClose={close}
+      onSave={(values) =>
+        save({
+          ...rule,
+          id: rule?.id ?? 0,
+          comment: text(values, 'comment'),
+          proto: text(values, 'proto'),
+          interfaces: list(text(values, 'interfaces')),
+          target_port: parsePort(text(values, 'target_port')),
+          target_address: text(values, 'target_address') || undefined,
+          source_address: text(values, 'source_address') || undefined,
+          redirect_address: text(values, 'redirect_address'),
+          redirect_port: parsePort(text(values, 'redirect_port')),
+          enabled: checked(values, 'enabled'),
+          interfaces_invert: checked(values, 'interfaces_invert'),
+          source_address_invert: checked(values, 'source_address_invert'),
+          target_address_invert: checked(values, 'target_address_invert'),
+        })
+      }
+    />
+  );
+}
+
+export function SetEditor({
+  set,
+  save,
+  close,
+}: {
+  set?: NftSet;
+  save: (set: NftSet) => Promise<unknown>;
+  close: () => void;
+}) {
+  return (
+    <Editor
+      title={set ? `Edit @${set.name}` : 'Add named set'}
+      initial={{
+        name: set?.name ?? '',
+        set_type: set?.set_type ?? 'ipv4_addr',
+        elements: set?.elements ?? '',
+        comment: set?.comment ?? '',
+        interval: set?.interval ?? false,
+      }}
+      fields={[
+        {
+          name: 'name',
+          label: 'Set name',
+          required: true,
+          disabled: Boolean(set),
+          placeholder: 'trusted_networks',
+        },
+        {
+          name: 'set_type',
+          label: 'Element type',
+          required: true,
+          placeholder: 'ipv4_addr, ipv6_addr, inet_service…',
+        },
+        comment,
+        {
+          name: 'interval',
+          label: 'Enable intervals / CIDR ranges',
+          type: 'toggle',
+        },
+        {
+          name: 'elements',
+          label: 'Elements',
+          type: 'textarea',
+          wide: true,
+          hint: 'One element per line. Reference this set with @name in rules.',
+        },
+      ]}
+      onClose={close}
+      onSave={(values) =>
+        save({
+          ...set,
+          name: set?.name ?? text(values, 'name'),
+          set_type: text(values, 'set_type'),
+          elements: text(values, 'elements'),
+          comment: text(values, 'comment') || undefined,
+          interval: checked(values, 'interval'),
+        })
+      }
+    />
+  );
+}
