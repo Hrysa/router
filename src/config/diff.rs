@@ -7,4 +7,5 @@ pub struct ChangeSet {
     pub interfaces: bool,
     pub wireguard: bool,
     pub sysctl: bool,
+    pub shaper: bool,
 }

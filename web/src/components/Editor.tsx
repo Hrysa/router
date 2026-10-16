@@ -21,6 +21,7 @@ export interface Field {
   options?: string[];
   placeholder?: string;
   hint?: string;
+  warning?: (values: Values) => string | undefined;
   required?: boolean;
   disabled?: boolean;
   min?: number;
@@ -127,6 +128,9 @@ export function Editor({
                     <span>
                       {field.label}
                       {field.hint && <small>{field.hint}</small>}
+                      {field.warning?.(values) && (
+                        <small className="field-warning" role="status">{field.warning(values)}</small>
+                      )}
                     </span>
                   </label>
                 );
@@ -166,7 +170,7 @@ export function Editor({
                     >
                       {field.options?.map((option) => (
                         <option key={option} value={option}>
-                          {option}
+                          {option || field.placeholder}
                         </option>
                       ))}
                     </select>
@@ -198,6 +202,9 @@ export function Editor({
                     />
                   )}
                   {field.hint && <small id={`${id}-hint`}>{field.hint}</small>}
+                  {field.warning?.(values) && (
+                    <small className="field-warning" role="status">{field.warning(values)}</small>
+                  )}
                 </div>
               );
             })}

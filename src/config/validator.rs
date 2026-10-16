@@ -15,6 +15,14 @@ pub fn validate(config: &Config) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     validate_interfaces(config, &mut errors);
+    errors.extend(super::shaper::validate(config));
+    errors.extend(super::static_routes::validate(config));
+    if let Err(error) = super::routing::wan_return_routes(config) {
+        errors.push(ValidationError {
+            field: "interfaces.items.return_route_table".into(),
+            message: error.to_string(),
+        });
+    }
     validate_dhcp(config, &mut errors);
     validate_firewall(config, &mut errors);
 
@@ -66,6 +74,12 @@ fn validate_interfaces(config: &Config, errors: &mut Vec<ValidationError>) {
     let mut names = std::collections::HashSet::new();
     for (i, iface) in config.interfaces.items.iter().enumerate() {
         let prefix = format!("interfaces.items[{}]", i);
+
+        for (field, value) in [("mtu", iface.mtu), ("mss_clamp_mtu", iface.mss_clamp_mtu)] {
+            if value.is_some_and(|value| !(1280..=9216).contains(&value)) {
+                errors.push(ValidationError { field: format!("{}.{}", prefix, field), message: "must be between 1280 and 9216 bytes".into() });
+            }
+        }
 
         // Validate name
         if !is_valid_interface_name(&iface.name) {
@@ -229,6 +243,7 @@ fn validate_dhcp(config: &Config, errors: &mut Vec<ValidationError>) {
 }
 
 fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
+    validate_outbound_routes(config, errors);
     let valid_policies = ["accept", "drop", "reject"];
 
     if !valid_policies.contains(&config.firewall.default_policy.input.as_str()) {
@@ -363,6 +378,72 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
 
 // ── Validation helpers ────────────────────────────────────────────────────────
 
+fn validate_outbound_routes(config: &Config, errors: &mut Vec<ValidationError>) {
+    use super::schema::Action;
+    for (chain, rules) in [("input", &config.firewall.rules.input), ("forward", &config.firewall.rules.forward)] {
+        for (index, rule) in rules.iter().enumerate() {
+            if !rule.preserve_internal_routes && (chain != "forward" || rule.action != Action::Accept || rule.route_via.is_none()) {
+                errors.push(ValidationError {
+                    field: format!("firewall.rules.{}[{}].preserve_internal_routes", chain, index),
+                    message: "disabling internal-route preservation requires a forward Accept rule with route_via".into(),
+                });
+            }
+            let Some(target) = &rule.route_via else { continue };
+            let problem = if chain != "forward" || rule.action != Action::Accept {
+                Some("route_via is only supported on forward Accept rules")
+            } else if !config.interfaces.items.iter().any(|interface| {
+                interface.name == *target && interface.is_wan() && interface.return_routing != Some(false)
+            }) {
+                Some("route_via must name a configured WAN with return routing enabled")
+            } else if rule.oif.is_some() {
+                Some("route_via cannot be combined with an egress interface match")
+            } else if rule.rate.is_some() {
+                Some("route_via cannot be combined with a rate limit")
+            } else if rule.state.as_ref().is_some_and(|states| !states.is_empty() && !states.iter().any(|state| state == "new")) {
+                Some("route_via connection states must include new, or be empty")
+            } else if rule.proto.as_ref().is_some_and(|protocols| protocols.iter().any(|protocol| !matches!(protocol.as_str(), "ip" | "tcp" | "udp" | "icmp"))) {
+                Some("route_via supports IPv4 protocols ip, tcp, udp and icmp only")
+            } else if (rule.sport.is_some() || rule.dport.is_some()) && rule.proto.as_ref().is_some_and(|protocols| protocols.iter().any(|protocol| !matches!(protocol.as_str(), "tcp" | "udp"))) {
+                Some("route_via port matches require tcp or udp")
+            } else {
+                None
+            };
+            if let Some(message) = problem {
+                errors.push(ValidationError {
+                    field: format!("firewall.rules.{}[{}].route_via", chain, index),
+                    message: message.into(),
+                });
+            }
+            for (field, address) in [("saddr", &rule.saddr), ("daddr", &rule.daddr)] {
+                let Some(address) = address else { continue };
+                let valid = if address == "@local" {
+                    true
+                } else if let Some(name) = address.strip_prefix('@') {
+                    config.firewall.sets.iter().any(|set| set.name == name && set.set_type == "ipv4_addr")
+                } else {
+                    is_valid_cidr(address) && address.split('/').next().is_some_and(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+                };
+                if !valid {
+                    errors.push(ValidationError {
+                        field: format!("firewall.rules.{}[{}].{}", chain, index, field),
+                        message: "WAN selection requires an IPv4 address/subnet, @local or an ipv4_addr set".into(),
+                    });
+                }
+            }
+            for (field, port) in [("sport", &rule.sport), ("dport", &rule.dport)] {
+                if let Some(super::schema::PortSpec::Set(name)) = port {
+                    if !config.firewall.sets.iter().any(|set| set.name == name.trim_start_matches('@') && set.set_type == "inet_service") {
+                        errors.push(ValidationError {
+                            field: format!("firewall.rules.{}[{}].{}", chain, index, field),
+                            message: "WAN selection port sets must name a configured inet_service set".into(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn validate_single_line(field: &str, value: &str, errors: &mut Vec<ValidationError>) {
     if value.chars().any(char::is_control) {
         errors.push(ValidationError { field: field.into(), message: "control characters are not allowed".into() });
@@ -416,6 +497,70 @@ fn is_valid_mac(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn common_mtu_limits_are_validated_independently_of_interface_role() {
+        let mut config = Config::default();
+        config.interfaces.items = vec![InterfaceConfig { name: "lan0".into(), ..Default::default() }];
+        for value in [0, 1279, 9217] {
+            config.interfaces.items[0].mtu = Some(value);
+            config.interfaces.items[0].mss_clamp_mtu = Some(value);
+            let errors = validate(&config);
+            assert!(errors.iter().any(|e| e.field.ends_with(".mtu")));
+            assert!(errors.iter().any(|e| e.field.ends_with(".mss_clamp_mtu")));
+        }
+        config.interfaces.items[0].mtu = Some(1492);
+        config.interfaces.items[0].mss_clamp_mtu = Some(1492);
+        assert!(!validate(&config).iter().any(|e| e.field.ends_with(".mtu") || e.field.ends_with(".mss_clamp_mtu")));
+        let old: InterfaceConfig = serde_json::from_value(serde_json::json!({"name":"lan0"})).unwrap();
+        assert_eq!((old.mtu, old.mss_clamp_mtu), (None, None));
+    }
+
+    #[test]
+    fn disabling_internal_preservation_requires_an_explicit_forward_wan_selector() {
+        let mut config = crate::config::routing::outbound_test_config();
+        config.firewall.rules.forward[0].preserve_internal_routes = false;
+        assert!(super::validate(&config).is_empty());
+        config.firewall.rules.forward[0].route_via = None;
+        assert!(super::validate(&config).iter().any(|error| error.field.ends_with("preserve_internal_routes")));
+    }
+    #[test]
+    fn outbound_wan_selection_validates_targets_and_prerouting_matches() {
+        let config = crate::config::routing::outbound_test_config();
+        assert!(super::validate(&config).is_empty());
+        let base = serde_json::to_value(&config.firewall.rules.forward[0]).unwrap();
+        for (field, value) in [
+            ("route_via", serde_json::json!("missing")),
+            ("route_via", serde_json::json!("lan0")),
+            ("action", serde_json::json!("drop")),
+            ("action", serde_json::json!("tproxy")),
+            ("oif", serde_json::json!("wan0")),
+            ("rate", serde_json::json!("10/second")),
+            ("state", serde_json::json!(["established"])),
+            ("proto", serde_json::json!(["ipv6-icmp"])),
+            ("proto", serde_json::json!(["icmp"])),
+            ("saddr", serde_json::json!("2001:db8::/64")),
+            ("daddr", serde_json::json!("@missing")),
+            ("daddr", serde_json::json!("@web")),
+            ("dport", serde_json::json!("@clients")),
+        ] {
+            let mut changed = config.clone();
+            let mut rule = base.clone();
+            rule[field] = value;
+            changed.firewall.rules.forward[0] = serde_json::from_value(rule).unwrap();
+            assert!(!super::validate(&changed).is_empty(), "accepted invalid {field}");
+        }
+        let mut disabled = config.clone();
+        disabled.interfaces.items[0].return_routing = Some(false);
+        assert!(super::validate(&disabled).iter().any(|error| error.field.ends_with("route_via")));
+        let mut input = config.clone();
+        input.firewall.rules.input.push(input.firewall.rules.forward.remove(0));
+        assert!(super::validate(&input).iter().any(|error| error.field.starts_with("firewall.rules.input") && error.field.ends_with("route_via")));
+        for method in [super::super::schema::InterfaceMethod::Dhcp, super::super::schema::InterfaceMethod::Pppoe] {
+            let mut dynamic = config.clone();
+            dynamic.interfaces.items[0].method = method;
+            assert!(super::validate(&dynamic).is_empty());
+        }
+    }
     use super::*;
     use crate::config::schema::*;
 

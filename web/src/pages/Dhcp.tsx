@@ -106,7 +106,6 @@ export function Dhcp() {
     <>
       <PageHeader
         title="DHCP & leases"
-        description="A place on the network for every device."
         actions={
           <button
             className="primary"

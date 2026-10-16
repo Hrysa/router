@@ -1,5 +1,7 @@
 export interface InterfaceConfig {
   name: string;
+  mtu?: number;
+  mss_clamp_mtu?: number;
   label?: string;
   method: 'static' | 'dhcp' | 'pppoe';
   static_config?: { address: string; gateway?: string; dns?: string[] };
@@ -15,6 +17,8 @@ export interface InterfaceConfig {
   bridge_ports?: string[];
   vlan_id?: number;
   parent?: string;
+  return_route_table?: number;
+  return_routing?: boolean;
 }
 export interface InterfaceDetail {
   name: string;
@@ -35,6 +39,8 @@ export interface FirewallRule {
   comment?: string;
   interfaces: string[];
   oif?: string;
+  route_via?: string;
+  preserve_internal_routes?: boolean;
   proto?: string[];
   dport?: PortSpec;
   sport?: PortSpec;
@@ -106,12 +112,45 @@ export interface Hooks {
   before_start: string;
   after_start: string;
 }
+export interface ShaperProfile {
+  id: number; comment: string; interface: string; enabled: boolean; side: 'wan' | 'lan';
+  upload_kbit: number; download_kbit: number; nat: boolean; overhead: number; mpu: number; link_layer: 'none' | 'atm' | 'ptm';
+}
+export interface ShaperSettings { profiles: ShaperProfile[] }
+export interface ShaperStats { bytes: number; packets: number; drops: number; backlog_bytes: number; ecn_marks: number; average_delay_us: number }
+export interface ShaperStatus { timestamp_ms: number; error?: string; reconnect_active: boolean; profiles: { id: number; interface: string; egress?: ShaperStats; ingress?: ShaperStats }[] }
 export interface Config {
+  shaper?: ShaperSettings;
+  routing: { routes: StaticRoute[] };
   interfaces: { items: InterfaceConfig[] };
   firewall: Firewall;
   dhcp: { pools?: Pool[]; static_leases: Reservation[] };
   hooks: Hooks;
   [section: string]: unknown;
+}
+export interface StaticRoute {
+  id: number;
+  comment: string;
+  destination: string;
+  interface: string;
+  gateway?: string;
+  table: number;
+  metric: number;
+  on_link: boolean;
+  enabled: boolean;
+}
+export interface WanTable { name: string; interface: string; table: number }
+export interface RoutingSettings { routes?: StaticRoute[]; wan_tables: WanTable[] }
+export interface KernelRoute {
+  family: string;
+  dst?: string;
+  gateway?: string;
+  dev?: string;
+  table: string | number;
+  metric?: number;
+  protocol?: string | number;
+  type?: string;
+  nexthops?: { gateway?: string; dev?: string; weight?: number }[];
 }
 export interface Service {
   name: string;

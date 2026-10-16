@@ -97,6 +97,8 @@ pub async fn delete_interface(
     let len = config.interfaces.items.len();
     config.interfaces.items.retain(|i| i.name != name);
     if config.interfaces.items.len() < len {
+        let errors = crate::config::validator::validate(&config);
+        if !errors.is_empty() { return Err(errors.into()); }
         state.config.set(config).await?;
         Ok(Json(json!({"status": "ok", "deleted": name})))
     } else {

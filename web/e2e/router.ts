@@ -6,6 +6,8 @@ import type {
   NftSet,
   PortForward,
   Reservation,
+  StaticRoute,
+  ShaperSettings,
 } from '../src/lib/types';
 
 export async function mockRouter(
@@ -13,6 +15,7 @@ export async function mockRouter(
   options: { authenticated?: boolean; passwordConfigured?: boolean } = {},
 ) {
   const config: Config = {
+    routing: { routes: [] },
     interfaces: {
       items: [
         { name: 'eth0', label: 'Internet', method: 'dhcp' },
@@ -127,6 +130,10 @@ export async function mockRouter(
       : undefined;
     if (method !== 'GET') state.writes.push({ path, method, body });
     if (method === 'GET') {
+      if (path === '/config/shaper') return reply(state.config.shaper ?? { profiles: [] });
+      if (path === '/monitor/shaper') return reply({ timestamp_ms: Date.now(), reconnect_active: false, profiles: [] });
+      if (path === '/config/routing') return reply({ routes: state.config.routing.routes, wan_tables: [{ name: 'eth0', interface: 'eth0', table: 100 }] });
+      if (path === '/monitor/routes') return reply({ routes: [{ family: 'ipv4', dst: 'default', gateway: '192.0.2.1', dev: 'eth0', table: 'main', metric: 1024, protocol: 'dhcp' }] });
       if (path === '/config') {
         const wire = structuredClone(state.config);
         if (!wire.interfaces.items.length)
@@ -286,8 +293,24 @@ export async function mockRouter(
       );
       return reply({ status: 'ok' });
     }
+    if (path === '/config/shaper' && method === 'PUT') {
+      state.config.shaper = body as ShaperSettings;
+      return reply({ status: 'ok' });
+    }
     if (path === '/config/interfaces') {
       state.config.interfaces.items.push(body as InterfaceConfig);
+      return reply({ status: 'ok' });
+    }
+    if (path === '/config/routing/routes') {
+      const id = Math.max(0, ...state.config.routing.routes.map((route) => route.id)) + 1;
+      state.config.routing.routes.push({ ...(body as StaticRoute), id });
+      return reply({ status: 'ok' });
+    }
+    if (path.startsWith('/config/routing/routes/')) {
+      const id = Number(path.split('/').at(-1));
+      state.config.routing.routes = method === 'DELETE'
+        ? state.config.routing.routes.filter((route) => route.id !== id)
+        : state.config.routing.routes.map((route) => route.id === id ? body as StaticRoute : route);
       return reply({ status: 'ok' });
     }
     if (path.startsWith('/config/interfaces/')) {

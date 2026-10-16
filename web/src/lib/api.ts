@@ -91,6 +91,8 @@ export function normalizeConfig(config: Config): Config {
   return {
     ...config,
     interfaces: { ...config.interfaces, items: config.interfaces.items ?? [] },
+    routing: { ...config.routing, routes: config.routing?.routes ?? [] },
+    shaper: { ...config.shaper, profiles: config.shaper?.profiles ?? [] },
     hooks: config.hooks ?? { before_start: '', after_start: '' },
   };
 }

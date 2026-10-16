@@ -21,10 +21,7 @@ function Singbox() {
   const query = useApi<{ raw: string }>('/singbox/config');
   return (
     <>
-      <PageHeader
-        title="sing-box"
-        description="Your proxy configuration, exactly as you wrote it."
-      />
+      <PageHeader title="sing-box" />
       <div className="info-banner">
         <Code size={20} />
         <p>
@@ -107,10 +104,7 @@ function StartupHooks() {
   const config = useConfig();
   return (
     <>
-      <PageHeader
-        title="Startup hooks"
-        description="A little automation, at the right moment."
-      />
+      <PageHeader title="Startup hooks" />
       <div className="warning-banner">
         <AlertTriangle size={21} />
         <p>

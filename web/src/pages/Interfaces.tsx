@@ -25,6 +25,14 @@ const fields: Field[] = [
     required: true,
     placeholder: "eth0, br0, vlan10",
   },
+  {
+    name: "device_mtu", label: "Device MTU", type: "number", min: 1280, max: 9216,
+    placeholder: "Default", hint: "Optional link MTU for this device. For PPPoE this is the parent device, separate from the tunnel MTU.",
+  },
+  {
+    name: "mss_clamp_mtu", label: "TCP MSS path MTU", type: "number", min: 1280, max: 9216,
+    placeholder: "Off", hint: "Optional cap in both directions. 1492 gives IPv4 MSS 1452 and IPv6 MSS 1432. Smaller advertised values are preserved. Applies to routed TCP, including router traffic; not bridge-only switching. For PPPoE this targets the tunnel and overrides its clamp setting.",
+  },
   { name: "label", label: "Display label", placeholder: "Main uplink" },
   {
     name: "method",
@@ -52,6 +60,23 @@ const fields: Field[] = [
     when: (values) => values.method === "static",
   },
   {
+    name: "return_routing",
+    label: "WAN return routing",
+    type: "toggle",
+    hint: "Return incoming IPv4 connections through the same WAN. Enabled by default for static, DHCP and PPPoE WANs.",
+    when: (values) => values.method !== "static" || Boolean(values.gateway),
+  },
+  {
+    name: "return_route_table",
+    label: "WAN return routing table",
+    type: "number",
+    min: 1,
+    max: 65535,
+    placeholder: "Automatic, or override (e.g. 100)",
+    hint: "A stable table is allocated from the interface name. Overrides must be unique and unused (not 253–255 or a TPROXY table).",
+    when: (values) => (values.method !== "static" || Boolean(values.gateway)) && values.return_routing !== false,
+  },
+  {
     name: "hostname",
     label: "DHCP client hostname",
     when: (values) => values.method === "dhcp",
@@ -71,7 +96,7 @@ const fields: Field[] = [
   },
   {
     name: "mtu",
-    label: "MTU",
+    label: "PPPoE tunnel MTU",
     type: "number",
     min: 576,
     max: 1500,
@@ -132,10 +157,14 @@ const fields: Field[] = [
 function initial(iface?: InterfaceConfig): Values {
   return {
     name: iface?.name ?? "",
+    device_mtu: iface?.mtu === undefined ? "" : String(iface.mtu),
+    mss_clamp_mtu: iface?.mss_clamp_mtu === undefined ? "" : String(iface.mss_clamp_mtu),
     label: iface?.label ?? "",
     method: iface?.method ?? "static",
     address: iface?.static_config?.address ?? "",
     gateway: iface?.static_config?.gateway ?? "",
+    return_routing: iface?.return_routing ?? true,
+    return_route_table: iface?.return_route_table === undefined ? "" : String(iface.return_route_table),
     dns: iface?.static_config?.dns?.join(", ") ?? "",
     hostname: iface?.dhcp?.hostname ?? "",
     username: iface?.pppoe?.username ?? "",
@@ -157,8 +186,17 @@ export function interfaceFromValues(
   return {
     ...original,
     name: original?.name ?? text(values, "name"),
+    mtu: text(values, "device_mtu") ? integer(values, "device_mtu", 1280, 9216) : undefined,
+    mss_clamp_mtu: text(values, "mss_clamp_mtu") ? integer(values, "mss_clamp_mtu", 1280, 9216) : undefined,
     label: text(values, "label") || undefined,
     method,
+    return_routing: (method !== "static" || text(values, "gateway"))
+      ? values.return_routing !== false
+      : undefined,
+    return_route_table:
+      (method !== "static" || text(values, "gateway")) && text(values, "return_route_table")
+        ? integer(values, "return_route_table", 1, 65535)
+        : undefined,
     static_config:
       method === "static"
         ? {
@@ -233,7 +271,6 @@ export function Interfaces() {
     <>
       <PageHeader
         title="Interfaces"
-        description="The connections that bring your network together."
         actions={
           <button
             className="primary"

@@ -115,6 +115,7 @@ Transform abstract config into concrete service files:
 |--------|--------|
 | `nftables.rs` | nftables JSON ruleset (built with the `nftables` crate; applied via `nft -j -f`, never written to disk) |
 | `interfaces.rs` | `50-routerd-*.network`/`.netdev` files |
+| `routes.rs` | Saved static `[Route]` sections appended to managed `.network` files |
 | `kea.rs` | `/etc/kea/kea-dhcp4.conf` |
 | `ppp.rs` | `/etc/ppp/peers/isp` |
 | `wireguard.rs` | `/etc/wireguard/wg0.conf` |
@@ -198,8 +199,8 @@ The renderer emits a single JSON transaction. It resets only the four table name
 | Table | Chains | Purpose |
 |-------|--------|---------|
 | `inet filter` | input, forward, output + named sets | firewall rules; implicit `ct state established,related accept` when policy is drop; implicit `iifname "lo" accept` in input |
-| `ip nat` | prerouting (DNAT), postrouting | port forwards + masquerade; auto hairpin masquerade for forwards into the LAN subnet |
-| `inet mangle` | prerouting (prio -150) | tproxy rules (mark + tproxy + accept) |
+| `ip nat` | prerouting (DNAT), postrouting | port forwards + masquerade; same-subnet hairpin masquerade across all static internal networks, including VLANs |
+| `inet mangle` | prerouting (prio -150), wan_return (prio -140) | TPROXY rules and optional per-WAN connection/reply marking |
 | `inet blackhole` | input, forward (prio -5) | `blocked` set, drop saddr/daddr matches |
 
 Address conventions: `@setname` references a named set (protocol picked from the set's type), `@local` compiles to a `fib ... type local` match.
@@ -207,6 +208,146 @@ Address conventions: `@setname` references a named set (protocol picked from the
 Every rule's comment is `[<id>] <comment>` — `/api/firewall/stats` parses the ID out of `nft -j list chain` output to attach per-rule counters.
 
 Do not share these four tables with other tools: their contents are replaced on every apply. TPROXY marks select dedicated routing tables; reserved IDs 0, 253, 254, and 255 are rejected. Cleanup removes the matching local route/rule, not the entire routing table.
+
+### System route management
+
+`routing.routes` stores static IPv4/IPv6 routes with server-assigned immutable IDs,
+destination, configured interface, optional gateway, numeric table (default 254),
+metric (default 100), gateway-on-link and enablement. `src/config/static_routes.rs`
+canonicalizes prefixes (bare IPs become host routes), validates gateway families,
+configured interfaces, IDs, duplicate enabled prefix/table/metric keys, reserved
+and active TPROXY tables, and known collisions with metric-0 automatic routes.
+Interface deletion validates references before saving. No live route is imported
+into configuration or edited through the monitoring API.
+
+`src/renderer/routes.rs` appends enabled `[Route]` sections to the existing managed
+interface `.network` files, resolving a PPPoE physical interface to `ppp0`. There
+is no separate route daemon, unit or prefix-cleanup mechanism. Rendering an empty
+or disabled route removes its declaration. Routes participate in the existing
+network-file comparisons against both disk and the last successful snapshot,
+atomic writes and networkd reconciliation, so Save stays separate from Apply.
+Networkd handles the route lifecycle and persistence across link reconnects.
+Validation uses the schema, without adding an external networkd syntax check.
+Actual gateway reachability and live link behavior still depend on the host.
+
+The routing API holds `ConfigStore::lock_operation()` before reading for every
+mutation and holds it through validated persistence. Creation allocates a unique
+ID under this lock. A routing-section PUT replaces the entire section; individual
+CRUD preserves unrelated routes and configuration. `GET /api/config/routing`
+returns saved routes and resolved WAN table IDs for the editor. Normal config
+serialization keeps this derived table metadata out of persistence.
+
+`src/service/routing.rs` reads live kernel routes with fixed `ip -j -4/-6 route
+show table all` arguments, a timeout and propagated failures. It preserves route
+and multipath metadata and adds the address family, with `main` as the omitted-table
+default. The UI displays this separately from saved routes; it does not claim a
+route's enabled setting proves installation. This feature does not add policy rules,
+multipath declarations, arbitrary unmanaged-link takeover or IPv6 WAN selection.
+
+### WAN return routing
+
+IPv4 WAN return routing defaults to enabled for static, DHCP and PPPoE WANs,
+without changing ordinary main-table default-route selection. Set
+`interfaces.items[].return_routing: false` to opt out. `return_route_table` overrides
+a stable FNV-1a interface-name-derived table ID in 10000–59999; collisions are
+validation errors requiring an explicit override.
+`src/config/routing.rs` validates unique table IDs and WAN addresses, on-subnet
+gateways, and TPROXY mark/table conflicts. IPv6 return routing is not supported.
+Static and DHCP VLAN WANs are supported. Only one managed PPPoE connection
+is supported; its fixed tunnel name `ppp0` is reserved.
+
+The existing managed `.network` file gains a connected WAN route and default
+route in the selected table, plus IPv4 source and masked-fwmark policy rules.
+DHCP instead gains a `Gateway=_dhcp4` route in its table, maintained by networkd
+with the lease while ordinary DHCP routes remain in `main`. PPPoE gains a
+link-scoped default route on `ppp0`, installed by networkd when the tunnel exists.
+Dynamic WANs use masked-fwmark policies without fixed source-address selectors.
+PPP rendering and service enablement select the PPPoE interface independently
+of the first WAN.
+At priority 100, each source/mark selector may query `main` with
+`SuppressPrefixLength=0` only when `To=` matches a configured static internal
+IPv4 subnet. These canonical subnet exceptions include bridges and VLANs without
+a gateway, exclude WANs and dynamic interfaces, and are deduplicated. All other
+destinations go directly to the WAN table at priority 110: more-specific routes
+through another WAN or VPN in `main` cannot steal external replies. Networkd owns
+these declarations through the existing
+file reconciliation/reload path; no table-wide route flush is issued. These
+priorities and tables must not conflict with administrator-managed rules.
+
+The nftables `wan_return` prerouting chain runs after TPROXY and before DNAT.
+New IPv4 original-direction connections arriving on the WAN interface store
+`table << 16` in the connection mark's upper 16 bits. Replies with a configured
+connection mark restore those bits to the packet mark before route lookup. An
+output route chain restores marks for router-hosted service replies, including
+on dynamic WANs. Low mark bits are preserved. Static WANs also have source-address
+policy rules. Enabling this feature reserves the upper mark bits;
+TPROXY marks must then fit in the lower 16 bits and use different routing tables.
+
+Forward Accept rules may set `route_via` to a configured WAN name with return
+routing enabled. `wan_outbound` runs at prerouting priority -90, after TPROXY
+(-150), inbound affinity (-140), and DNAT (-100). It excludes WAN ingress,
+reply-direction packets, router-local destinations and DNAT traffic, and skips
+packets with low mark bits already set (including TPROXY). For existing connections
+it restores the WAN mark before evaluating selectors. For new unmarked connections,
+the first matching selector stores its upper-bit WAN/mode mark in both the connection
+and packet marks and returns. `preserve_internal_routes` defaults to true and adds
+the configured internal-subnet exclusions to that selector. False omits them.
+Preserved and strict connections use distinct marks even on the same WAN; restoring
+the connection mark retains both the chosen WAN and preservation mode. Named sets are also declared in `inet mangle`.
+Prerouting shares the forward-rule matcher, without counters, logging or verdicts;
+user ID comments and counters remain in `inet filter` for existing stats APIs.
+
+`src/config/routing.rs` allocates disjoint strict-mode upper-16-bit marks separately
+from ordinary `table << 16` marks. Allocation sorts WAN names and probes around
+collisions with all WAN and strict marks, so rule/interface reordering does not
+change it. It does not consume TPROXY's low bits or allocate extra route tables.
+Changes to WAN topology/table IDs can change this derived namespace; verify new
+connections after such changes.
+
+`src/service/wan_policy.rs` installs global strict-mark policy pairs: priority 90
+looks up the selected WAN table, and priority 91 returns unreachable if that table
+has no matching route. These precede the regular priority-100 internal exceptions.
+An explicit more-specific LAN route in the selected table is honored. Policies are
+not attached to WAN links and use protocol `kernel`, which networkd excludes from
+foreign-policy cleanup, so WAN/link loss cannot expose a fallback to `main`.
+The renderer excludes router-owned destinations regardless of preservation mode.
+
+After staged syntax checks and comparison, Apply prepares all terminal guards
+before lookup rules and before nftables can emit strict marks. These policies are
+maintained for all configured WANs while any outbound selector is enabled, retaining
+old pinned flows when a rule changes mode or target. After service reconciliation,
+only exact previously-owned obsolete rules are removed. Matching includes priority,
+mark, mask, protocol, action/table and absence of additional selectors. Conflicting
+administrator rules fail Apply; no table or policy-rule collection is flushed.
+Native ip-rule reads use detailed numeric JSON so protocol ownership is explicit.
+Normal startup reconciles these ephemeral policies too. As with other apply state,
+there is no durable ownership journal beyond the saved config/in-memory snapshot.
+
+Validation restricts `route_via` to forward Accept rules, IPv4 matches and configured
+WANs; egress-interface matches and rate limits are rejected, and nonempty state
+filters must include `new`. Disabling preservation is valid only on a forward
+Accept rule with a WAN selector. `ppp0` is resolved from the configured PPPoE interface.
+Normal filtering remains independent; selecting a WAN cannot bypass a drop verdict.
+
+While outbound selection is enabled, forward-chain guards for every WAN precede
+the implicit established/related Accept rule. Original-direction, non-DNAT packets
+from non-WAN ingress to external destinations with a WAN connection mark are dropped
+if their actual egress differs from that WAN. This prevents fallback through another
+interface if networkd removes a WAN's table/policy rules on link loss, including for
+already established flows and old flows after a selector changes target. These egress guards apply to preserved-mode marks. Strict marks rely on the
+global lookup/unreachable pair so explicit LAN exits in the WAN table remain valid.
+No table-wide flush is issued. Disabling/removing all
+WAN-selection rules removes outbound restoration and guards. WAN-ingress replies
+do not restore preserved outbound marks; strict reply marks are not restored by
+the inbound-WAN affinity renderer, so they use normal client/LAN routing. NAT remains
+explicit and independent. Router-originated outbound selection, IPv6 and automatic
+failover are not implemented.
+
+Hairpin SNAT does not use the legacy first-LAN accessor: it considers every
+static interface without a gateway, including VLANs. Rules require a source in
+the target server's subnet, its egress interface, and `ct status dnat`, avoiding
+the old broad masquerading of unrelated traffic to the server. DNAT ingress
+remains explicitly controlled by each port forward.
 
 ### Authentication and secrets
 
@@ -277,3 +418,63 @@ The frontend reimplements the Yacd-meta React shell, responsive sidebar, card-ba
 The overview and monitoring pages graph a selected interface rather than summing overlapping bridge/physical counters. `rx_bps` and `tx_bps` from the API are bytes/s. Configuration editors save without applying; startup hooks activate on normal startup. Service controls and backup restores are explicitly confirmed live operations. The pending-saves indicator only records this browser's actions, not authoritative configuration drift.
 
 Frontend regression tests live in `web/tests/` and use Bun's built-in runner. Build assets with Bun before compiling Rust; `web/dist/` is generated and ignored. See `web/README.md` for commands and `web/THIRD_PARTY_NOTICES.md` for reference attribution.
+
+Interface MTU and TCP MSS settings are independent of WAN/LAN role. Optional
+`interfaces.items[].mtu` sets the device MTU through networkd, including bridge
+and VLAN creation MTUs; PPPoE keeps its separate `pppoe.mtu` tunnel MTU. Explicit
+values range from 1280 to 9216 bytes. Hardware and parent/member link limits still
+apply. An unset device MTU leaves networkd/kernel defaults in control; removing
+an override does not guarantee an immediate reset of an existing link's MTU.
+
+Optional `mss_clamp_mtu` caps TCP MSS using a configured path MTU: IPv4 subtracts
+40 bytes and IPv6 subtracts 60. For example, 1492 yields MSS 1452/1432. Rules only
+lower existing MSS options on SYN/SYN-ACK packets and apply on device ingress and
+egress, including router-local and routed traffic. Pure bridge switching is not
+covered; MSS does not resize UDP packets or replace path MTU discovery. Blank
+means off, except the existing PPPoE `mss_clamp` default still derives a cap from
+its tunnel MTU; an explicit `mss_clamp_mtu` overrides that cap and targets `ppp0`.
+Clamping is rendered as nftables JSON rather than pppd options. A PPPoE parent
+with an explicit device MTU is managed by networkd without DHCP or link-local
+addressing so that the MTU can be applied. WebUI settings are under Interfaces →
+Edit; Save and Apply remain separate. No MTU or MSS value is inferred from WAN role.
+
+### Shaper service
+
+`src/service/shaper/` implements CAKE traffic control over a bounded, synchronous
+NETLINK_ROUTE transport, run on Tokio blocking workers. Netlink message lengths,
+attribute padding, kernel origin, sequence numbers, multipart completion/errors,
+and interrupted dumps are checked. No dependency or shell-command wrapper is
+needed for production TC operations. `src/config/shaper.rs` validates profiles;
+API section writes use the configuration operation lock and never apply.
+
+Apply suspends reconnect repairs, then reconciles shaping after service/routing
+operations. Required netlink failures propagate and are exposed by shaper status;
+only successful Apply activates the background reconciler. Every five seconds it
+uses the last successful configuration under the same operation lock, repairing
+missing/recreated links without activating saved drafts. `--init` alone never
+activates it. Like other Apply operations, shaping is not transactional: partial
+changes may remain on failure, and a new explicit Apply is needed to resume
+background repairs after an Apply failure.
+
+Egress CAKE lives at an owned root handle, with best-effort classification,
+NAT-aware source/destination host isolation, and GSO splitting. Ingress uses an
+owned ingress qdisc with a software matchall/mirred redirect into an IFB running
+CAKE in ingress mode; its MTU follows the selected device. LAN-facing profiles reverse source/destination isolation.
+PPPoE resolves the configured parent to `ppp0`; traffic marks used by WAN policy
+routing and TPROXY are untouched.
+
+`/run/routerd-shaper/ownership.json` is a private atomic journal, written before
+mutations and retained across daemon restarts. It records device indices, profile
+IDs, directions, and IFB identities; IFB aliases and redirect action cookies add
+kernel identity checks. Preflight checks all intended changes and cleanup
+records before mutation. Only implicit default qdiscs or previously owned queues
+may be replaced. Custom roots, custom multi-queue children, pre-existing ingress
+hooks/filters, and IFB name collisions are conflicts. Cleanup rechecks ownership,
+never flushes device filters globally, and will refuse ambiguous administrator
+changes. If ownership metadata is lost or a crash leaves an untagged IFB, manual
+review may be required; unrelated traffic control is never adopted merely by name.
+
+The ignored native shaper test always enters an isolated network namespace. It
+exercises CAKE/IFB creation, cookies and aliases, foreign-filter protection,
+cleanup, reconnects, two source IPs behind actual SNAT with four versus one flow,
+download reverse-NAT host fairness, spare-capacity reuse, and latency under load.

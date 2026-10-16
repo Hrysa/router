@@ -213,22 +213,20 @@ export function Modal({
 
 export function PageHeader({
   title,
-  description,
   actions,
 }: {
   title: string;
-  description: string;
   actions?: ReactNode;
 }) {
   return (
-    <header className="page-header">
-      <div>
-        <div className="eyebrow">ROUTER CONTROL CENTER</div>
-        <h1>{title}</h1>
-        <p>{description}</p>
-      </div>
-      {actions && <div className="actions">{actions}</div>}
-    </header>
+    <>
+      <h1 className="sr-only">{title}</h1>
+      {actions && (
+        <header className="page-header">
+          <div className="actions">{actions}</div>
+        </header>
+      )}
+    </>
   );
 }
 export function Card({

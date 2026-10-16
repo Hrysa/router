@@ -1,7 +1,8 @@
 import { checked, Editor, integer, text } from './Editor';
 import type { Field, Values } from './Editor';
-import type { FirewallRule, NftSet, PortForward } from '../lib/types';
+import type { Config, FirewallRule, NftSet, PortForward } from '../lib/types';
 import { formatPort, list, parsePort } from '../lib/format';
+import { useConfig } from '../lib/queries';
 
 const ingress: Field = {
   name: 'interfaces',
@@ -18,6 +19,15 @@ const comment: Field = {
   placeholder: 'What is this rule for?',
 };
 const enabled: Field = { name: 'enabled', label: 'Enabled', type: 'toggle' };
+
+export function wanMasqueradeWarning(config: Config | undefined, name: string): string | undefined {
+  if (!config || !name) return undefined;
+  const wan = config.interfaces.items.find((iface) => iface.name === name);
+  if (!wan || (wan.method === 'static' && !wan.static_config?.gateway)) return undefined;
+  const device = wan.method === 'pppoe' ? 'ppp0' : wan.name;
+  if (config.firewall.nat.masquerade.some((rule) => rule.oif === device)) return undefined;
+  return `No masquerade is configured on ${device}. Private LAN clients normally need it for Internet access unless the upstream router has a return route to their subnet. Add ${device} under Policies & NAT → Masquerade egress interfaces, then Save and Apply.`;
+}
 const invert: Field[] = [
   { name: 'interfaces_invert', label: 'Invert ingress match', type: 'toggle' },
   { name: 'saddr_invert', label: 'Invert source match', type: 'toggle' },
@@ -37,6 +47,25 @@ const ruleFields: Field[] = [
     label: 'Egress interface',
     type: 'interface',
     placeholder: 'Any',
+    hint: 'Match the selected exit interface. This does not choose a route.',
+  },
+  {
+    name: 'route_via',
+    label: 'Route via WAN',
+    type: 'select',
+    placeholder: 'System routing',
+    when: (values) => values.action === 'accept',
+    hint: 'IPv4 only. Pins new outbound connections to this WAN. Router-local and port-forwarded traffic keep normal routing. Requires WAN return routing; configure masquerade separately if needed.',
+  },
+  {
+    name: 'preserve_internal_routes',
+    label: 'Preserve internal routes',
+    type: 'toggle',
+    when: (values) => values.action === 'accept' && Boolean(values.route_via),
+    hint: 'Enabled: configured LAN destinations use normal routing. Disabled: all matching destinations use the selected WAN table, including internal subnets.',
+    warning: (values) => values.preserve_internal_routes === false
+      ? 'Internal traffic may go to the WAN gateway. To keep a destination reachable directly, add its route to the selected WAN table. Test with a new connection after Apply.'
+      : undefined,
   },
   { name: 'proto', label: 'Protocols', placeholder: 'tcp, udp (empty = any)' },
   {
@@ -90,6 +119,8 @@ function ruleInitial(rule?: FirewallRule): Values {
     action: rule?.action ?? 'accept',
     interfaces: rule?.interfaces.join(', ') ?? '',
     oif: rule?.oif ?? '',
+    route_via: rule?.route_via ?? '',
+    preserve_internal_routes: rule?.preserve_internal_routes ?? true,
     proto: rule?.proto?.join(', ') ?? '',
     state: rule?.state?.join(', ') ?? '',
     saddr: rule?.saddr ?? '',
@@ -117,6 +148,11 @@ export function ruleFromValues(
     action === 'tproxy' ? integer(values, 'mark', 1, 4294967295) : undefined;
   if (mark && [253, 254, 255].includes(mark))
     throw new Error('TPROXY mark cannot be 253, 254 or 255.');
+  const routeVia = action === 'accept' ? text(values, 'route_via') || undefined : undefined;
+  if (routeVia && (text(values, 'oif') || text(values, 'rate')))
+    throw new Error('WAN selection cannot be combined with an egress interface match or rate limit.');
+  if (routeVia && text(values, 'state') && !list(text(values, 'state')).includes('new'))
+    throw new Error('WAN selection connection states must include new, or be empty.');
   return {
     ...original,
     id: original?.id ?? 0,
@@ -124,6 +160,8 @@ export function ruleFromValues(
     comment: text(values, 'comment'),
     interfaces: list(text(values, 'interfaces')),
     oif: text(values, 'oif') || undefined,
+    route_via: routeVia,
+    preserve_internal_routes: routeVia ? values.preserve_internal_routes !== false : true,
     proto: text(values, 'proto') ? list(text(values, 'proto')) : undefined,
     state: text(values, 'state') ? list(text(values, 'state')) : undefined,
     saddr: text(values, 'saddr') || undefined,
@@ -156,11 +194,20 @@ export function RuleEditor({
   save: (rule: FirewallRule) => Promise<unknown>;
   close: () => void;
 }) {
+  const config = useConfig();
+  const wans = config.data?.interfaces.items.filter((iface) =>
+    (iface.method !== 'static' || Boolean(iface.static_config?.gateway)) && iface.return_routing !== false,
+  ).map((iface) => iface.name) ?? [];
+  const options = [...new Set(['', ...wans, ...(rule?.route_via ? [rule.route_via] : [])])];
   return (
     <Editor
       title={rule ? `Edit rule #${rule.id}` : `Add ${chain} rule`}
       initial={ruleInitial(rule)}
-      fields={ruleFields}
+      fields={ruleFields.filter((field) => !['route_via', 'preserve_internal_routes'].includes(field.name) || chain === 'forward')
+        .map((field) => field.name === 'route_via' ? {
+          ...field, options,
+          warning: (values: Values) => wanMasqueradeWarning(config.data, text(values, 'route_via')),
+        } : field)}
       onClose={close}
       onSave={(values) => save(ruleFromValues(values, rule))}
     />

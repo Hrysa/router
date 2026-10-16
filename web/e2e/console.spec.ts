@@ -48,6 +48,7 @@ test('overview, all routes, themes and responsive layout', async ({
   });
   for (const [label, title] of [
     ['Interfaces', 'Interfaces'],
+    ['Routes', 'Routes'],
     ['Firewall', 'Firewall'],
     ['DHCP & leases', 'DHCP & leases'],
     ['Monitoring', 'Monitoring'],
@@ -316,4 +317,34 @@ test('empty Rust config fields and network failures do not crash the shell', asy
   await navigate(page, 'Startup hooks');
   await expect(page.getByLabel('Before startup script')).toHaveValue('');
   expect(errors).toEqual([]);
+});
+
+test('firewall tab survives refresh and browser history', async ({ page }) => {
+  await mockRouter(page);
+  await page.goto('/#/firewall');
+  await page.getByRole('tab', { name: /Forward rules/ }).click();
+  await expect(page).toHaveURL(/#\/firewall\?tab=forward$/);
+  await page.reload();
+  await expect(page.getByRole('tab', { name: /Forward rules/ })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: /Named sets/ }).click();
+  await page.goBack();
+  await expect(page.getByRole('tab', { name: /Forward rules/ })).toHaveAttribute('aria-selected', 'true');
+  await page.goForward();
+  await expect(page.getByRole('tab', { name: /Named sets/ })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('common interface MTU and MSS settings persist without applying', async ({ page }) => {
+  const state = await mockRouter(page);
+  await page.goto('/#/interfaces');
+  await page.getByRole('button', { name: 'Edit br0', exact: true }).click();
+  await page.getByLabel('Device MTU', { exact: true }).fill('1500');
+  await page.getByLabel('TCP MSS path MTU', { exact: true }).fill('1492');
+  await page.getByRole('button', { name: 'Save configuration', exact: true }).click();
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  expect(state.config.interfaces.items.find((iface) => iface.name === 'br0')).toMatchObject({ mtu: 1500, mss_clamp_mtu: 1492 });
+  await page.getByRole('button', { name: 'Edit br0', exact: true }).click();
+  await expect(page.getByLabel('Device MTU', { exact: true })).toHaveValue('1500');
+  await expect(page.getByLabel('TCP MSS path MTU', { exact: true })).toHaveValue('1492');
+  expect(state.writes.some((entry) => entry.path === '/config/apply')).toBe(false);
+  expect(state.unexpected).toEqual([]);
 });

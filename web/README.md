@@ -44,14 +44,20 @@ Browser tests require a real Node.js 22+ runtime for Playwright; do not force it
 
 ## Pages and safety
 
+The top bar identifies the current page. Content panels omit decorative page titles and taglines; page actions remain in a compact toolbar, with headings retained for screen readers.
+
 - **Overview:** selected-interface traffic, memory, uptime, configured links, and service health. Traffic is bytes/s; physical and bridge traffic are not summed. Cumulative CPU counters are not displayed as invented percentages.
 - **Interfaces:** static/DHCP/PPPoE, bridges and VLANs, plus live read-only link counters. Names are immutable on update. Interface fields offer configured/detected names with labels and link status; bridge members, firewall/NAT ingress, and masquerade support quick multi-selection. Custom names remain editable, including interfaces not currently detected.
-- **Firewall:** input/forward rules with ordering, named sets, port forwarding, default policies, masquerade and blocklists. Connection states are arrays; rule IDs survive editing.
+- **WAN return routing:** enabled by default for static IPv4, DHCP and PPPoE WANs, with a stable automatic table ID derived from the interface name. The editor offers an enable toggle and optional table override (1–65535 except 253–255, distinct from TPROXY and other host tables). Automatic collisions require a manual override. Policy priorities 100/110 and upper 16 mark bits are reserved. Only one PPPoE connection (`ppp0`) is managed; IPv6 return routing is not implemented. Save and Apply remain separate operations.
+- **Routes:** persistent IPv4/IPv6 destination routes with configured interface, optional gateway, Main/WAN/custom table, metric, gateway-on-link and enablement. Individual CRUD preserves other routes; drafts stay local across refetches. Saved changes require Apply. A separate read-only view shows live kernel routes across all tables, including routes from other tools. Main controls ordinary LAN/router system routing; explicit WAN selection uses its own table. Custom tables require a matching policy rule. PPPoE routes select the physical config interface and use `ppp0`. No policy-rule editor, foreign-route import/deletion or IPv6 WAN selection is added.
+- **Firewall:** input/forward rules with ordering, named sets, port forwarding, default policies, masquerade and blocklists. Forward Accept rules offer **Route via WAN** (default: System routing) for new IPv4 outbound connections. Eligible configured WANs require return routing enabled; `route_via` saves their configured name, including for PPPoE. The first matching WAN selector pins the connection; filtering remains independent. **Preserve internal routes** defaults on, keeping configured internal subnets on normal routing. Turning it off includes internal destinations in the WAN selection; a warning explains that the WAN table needs a more-specific LAN route to keep that destination directly reachable. The mode is stored per connection and the saved flag is `preserve_internal_routes`. Router-local, WAN-ingress, DNAT/hairpin and TPROXY traffic keep their existing behavior. Preserved mode uses an egress guard; strict mode uses a global lookup/unreachable policy pair at priorities 90/91, blocking fallback to main while honoring routes in the selected table. Egress matches and rate limits cannot be combined with WAN selection; nonempty connection states must include `new`. Masquerade remains explicit. The editor and forward-rules page warn when the selected WAN has no masquerade entry, resolving PPPoE to `ppp0`; routed networks without NAT remain allowed. Connection states are arrays; rule IDs survive editing.
 - **DHCP & leases:** pools, reservations, and active Kea leases. Pool mutations fetch fresh configuration to avoid restoring deleted reservations.
 - **Monitoring / Services:** real metric histories and confirmed live service controls. No placeholder connections or log views.
 - **sing-box:** raw JSONC editor preserving comments. Saving does not restart the process; Apply attempts to restart sing-box.
 - **Startup hooks:** privileged shell scripts executed at normal startup, not each API Apply.
 - **Configuration:** schema validation and backups. **Restore immediately replaces and applies configuration**, with confirmation and possible loss of access.
+
+Firewall tabs are stored in the hash URL (for example, `#/firewall?tab=forward`) and survive refresh and browser back/forward navigation.
 
 Save and Apply are distinct. The top-bar indicator records saves in this browser only; it cannot prove server synchronization or detect another client's changes. Apply is not transactional; failure can leave partial changes. Hooks need normal startup rather than Apply. Unsaved editor drafts are protected against page navigation and reload, and background refetches do not overwrite drafts.
 
@@ -68,3 +74,33 @@ Save and Apply are distinct. The top-bar indicator records saves in this browser
 - `tests/`: isolated Bun regressions. `e2e/`: mocked browser regression coverage.
 
 Tokens use the existing `routerd_token` local-storage key. Logout, HTTP 401, and token changes clear query caches and unmount protected pages. Never render untrusted HTML: authenticated config contains secrets and any script running on the management origin can access the browser token. Section endpoints replace whole sections, so preserve unrelated fresh fields. See the root `README.md` and `ARCHITECTURE.md` for backend contracts and deployment cautions.
+
+Interface MTU and TCP MSS settings are independent of WAN/LAN role. Optional
+`interfaces.items[].mtu` sets the device MTU through networkd, including bridge
+and VLAN creation MTUs; PPPoE keeps its separate `pppoe.mtu` tunnel MTU. Explicit
+values range from 1280 to 9216 bytes. Hardware and parent/member link limits still
+apply. An unset device MTU leaves networkd/kernel defaults in control; removing
+an override does not guarantee an immediate reset of an existing link's MTU.
+
+Optional `mss_clamp_mtu` caps TCP MSS using a configured path MTU: IPv4 subtracts
+40 bytes and IPv6 subtracts 60. For example, 1492 yields MSS 1452/1432. Rules only
+lower existing MSS options on SYN/SYN-ACK packets and apply on device ingress and
+egress, including router-local and routed traffic. Pure bridge switching is not
+covered; MSS does not resize UDP packets or replace path MTU discovery. Blank
+means off, except the existing PPPoE `mss_clamp` default still derives a cap from
+its tunnel MTU; an explicit `mss_clamp_mtu` overrides that cap and targets `ppp0`.
+Clamping is rendered as nftables JSON rather than pppd options. A PPPoE parent
+with an explicit device MTU is managed by networkd without DHCP or link-local
+addressing so that the MTU can be applied. WebUI settings are under Interfaces →
+Edit; Save and Apply remain separate. No MTU or MSS value is inferred from WAN role.
+
+Traffic shaping lives at `#/shaper`. Profiles support WAN- or LAN-facing devices,
+upload/download rates in decimal Mbit/s, NAT-aware host fairness, and optional
+link overhead/framing. New profiles start disabled. Editors fetch the latest
+configuration before replacing `/config/shaper`, retaining other profiles;
+Save never applies. Rates should start below measured sustained link capacity.
+The live card polls `/monitor/shaper` every five seconds and derives Mbit/s from
+byte-counter deltas, skipping missing baselines and counter resets. Saved enable
+state is labeled separately from live queues. Proxy-created WAN flows can hide
+clients, so the editor offers LAN-facing shaping; bridge-only switching is not
+automatically covered. The browser fixture intercepts both shaper endpoints.

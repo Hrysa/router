@@ -51,7 +51,6 @@ export function Overview() {
     <>
       <PageHeader
         title="Your network, at a glance."
-        description="A little clarity for everything connected."
         actions={
           <span className="live-label">
             <span className="status-dot" />

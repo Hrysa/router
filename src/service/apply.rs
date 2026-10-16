@@ -41,6 +41,7 @@ pub async fn apply(config: &Config, prev_config: &Config, _config_path: &Path, s
             interfaces: true,
             wireguard: true,
             sysctl: true,
+            shaper: true,
         }
     } else {
         let mut changes = detect_rendered_changes(&rendered, config);
@@ -50,20 +51,32 @@ pub async fn apply(config: &Config, prev_config: &Config, _config_path: &Path, s
         changes.interfaces |= rendered.interfaces != previous.interfaces;
         changes.wireguard |= rendered.wireguard != previous.wireguard;
         changes.sysctl |= rendered.sysctl != previous.sysctl;
+        changes.shaper |= config.shaper != prev_config.shaper;
         changes
     };
+
+    crate::service::shaper::suspend().await;
+    crate::service::shaper::preflight_config(config).await?;
+
+    // Strict WAN selection must have a lookup and terminal guard before packets
+    // can receive its mark. These global rules survive networkd/link changes.
+    crate::service::wan_policy::prepare(prev_config, config).await?;
 
     // Only write configs that changed
     write_changed_configs(&rendered, &changeset, config).await?;
 
     // Restart changed services
     let services_restarted = restart_services(config, &rendered, &changeset, service_manager).await?;
+    crate::service::wan_policy::cleanup(prev_config, config).await?;
 
     // Always set up tproxy routing (ip rule + ip route) — these are ephemeral
     // and need to be re-applied on every boot/config change.
     if let Err(e) = apply_tproxy_routing(prev_config, config).await {
         return Err(e.context("tproxy routing setup failed"));
     }
+
+    crate::service::shaper::reconcile(config).await?;
+    crate::service::shaper::activate(config).await;
 
     tracing::info!(
         services = ?services_restarted,
@@ -126,7 +139,7 @@ fn detect_rendered_changes(rendered: &RenderedConfigs, config: &Config) -> Chang
         tracing::info!("all rendered configs unchanged, nothing to apply");
     }
 
-    ChangeSet { nftables, dhcpd, ppp, interfaces, wireguard, sysctl }
+    ChangeSet { nftables, dhcpd, ppp, interfaces, wireguard, sysctl, shaper: config.shaper.profiles.iter().any(|p| p.enabled) }
 }
 
 /// Check if a file's content differs from the rendered string.
@@ -456,7 +469,7 @@ fn wireguard_enabled(config: &Config) -> bool {
 }
 
 fn ppp_enabled(config: &Config) -> bool {
-    config.interfaces.wan().is_some_and(|wan| {
+    config.interfaces.items.iter().any(|wan| {
         wan.method == crate::config::schema::InterfaceMethod::Pppoe
             && wan.pppoe.as_ref().is_some_and(|pppoe| !pppoe.username.is_empty())
     })

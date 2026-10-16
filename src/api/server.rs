@@ -43,6 +43,8 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
         metrics: cfg.metrics,
     };
 
+    crate::service::shaper::start_background(state.config.clone());
+
     // Public routes: login and static SPA assets (login page must be reachable).
     let public_routes = Router::new()
         .route("/api/auth/login", post(handlers::auth::login))
@@ -73,6 +75,22 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
             "/api/config/firewall",
             post(handlers::config::patch_firewall),
         )
+        .route("/api/config/shaper", get(handlers::shaper::get_shaper).put(handlers::shaper::replace_shaper))
+        .route("/api/monitor/shaper", get(handlers::shaper::status))
+        // System routing
+        .route(
+            "/api/config/routing",
+            get(handlers::routing::get_routing).put(handlers::routing::replace_routing),
+        )
+        .route(
+            "/api/config/routing/routes",
+            post(handlers::routing::create_route),
+        )
+        .route(
+            "/api/config/routing/routes/:id",
+            put(handlers::routing::update_route).delete(handlers::routing::delete_route),
+        )
+        .route("/api/monitor/routes", get(handlers::routing::live_routes))
         // Firewall rules CRUD
         .route(
             "/api/config/firewall/rules",

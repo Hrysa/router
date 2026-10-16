@@ -479,9 +479,13 @@ main {
 .page-header {
   display: flex;
   gap: 20px;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
-  margin-bottom: 29px;
+  margin-bottom: 16px;
+}
+.field small.field-warning,
+.toggle-field small.field-warning {
+  color: var(--warning);
 }
 .eyebrow {
   font-size: 8px;
@@ -489,11 +493,6 @@ main {
   font-weight: 600;
   color: var(--faint);
   margin-bottom: 9px;
-}
-.page-header p {
-  margin-top: 9px;
-  font-size: 12px;
-  color: var(--muted);
 }
 .actions {
   display: flex;
@@ -1660,9 +1659,6 @@ tbody tr:hover {
   .page-header {
     flex-wrap: wrap;
   }
-  .page-header .actions {
-    margin-top: -4px;
-  }
   .breadcrumb > span {
     display: none;
   }
@@ -1715,13 +1711,7 @@ tbody tr:hover {
   }
   .page-header {
     gap: 17px;
-    margin-bottom: 23px;
-  }
-  .page-header h1 {
-    font-size: 27px;
-  }
-  .page-header p {
-    font-size: 11px;
+    margin-bottom: 16px;
   }
   .eyebrow {
     font-size: 7px;

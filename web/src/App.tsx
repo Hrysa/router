@@ -23,6 +23,7 @@ import {
   Shield,
   Sun,
   Wifi,
+  Share2,
   X,
 } from 'react-feather';
 import { getToken, setToken, write } from './lib/api';
@@ -39,10 +40,14 @@ import { Services } from './pages/Services';
 import { Monitoring } from './pages/Monitoring';
 import { ConfigEditors } from './pages/ConfigEditors';
 import { Backups } from './pages/Backups';
+import { Routes } from './pages/Routes';
+import { Shaper } from './pages/Shaper';
 
 const navigation = [
   { id: 'overview', label: 'Overview', icon: Grid, group: 'WORKSPACE' },
   { id: 'interfaces', label: 'Interfaces', icon: Layers },
+  { id: 'routes', label: 'Routes', icon: Share2 },
+  { id: 'shaper', label: 'Traffic shaping', icon: Activity },
   { id: 'firewall', label: 'Firewall', icon: Shield },
   { id: 'dhcp', label: 'DHCP & leases', icon: Wifi },
   { id: 'monitoring', label: 'Monitoring', icon: Activity },
@@ -52,7 +57,7 @@ const navigation = [
   { id: 'backups', label: 'Configuration', icon: Settings },
 ];
 const routeFromHash = () =>
-  window.location.hash.replace(/^#\/?/, '') || 'overview';
+  window.location.hash.replace(/^#\/?/, '').split('?')[0] || 'overview';
 type Theme = 'light' | 'dark' | 'system';
 function initialTheme(): Theme {
   const theme = localStorage.getItem('routerd_theme');
@@ -316,6 +321,8 @@ function Shell({
         <main id="main-content" tabIndex={-1} key={route}>
           {route === 'overview' && <Overview />}
           {route === 'interfaces' && <Interfaces />}
+          {route === 'routes' && <Routes />}
+          {route === 'shaper' && <Shaper />}
           {route === 'firewall' && <Firewall />}
           {route === 'dhcp' && <Dhcp />}
           {route === 'monitoring' && <Monitoring />}

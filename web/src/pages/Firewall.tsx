@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -29,10 +29,16 @@ import {
   NatEditor,
   RuleEditor,
   SetEditor,
+  wanMasqueradeWarning,
 } from '../components/FirewallEditors';
 
 type Tab = 'input' | 'forward' | 'nat' | 'sets';
 const tabs: Tab[] = ['input', 'forward', 'nat', 'sets'];
+function tabFromHash(): Tab {
+  const value = new URLSearchParams(window.location.hash.split('?')[1]).get('tab');
+  return tabs.includes(value as Tab) ? (value as Tab) : 'input';
+}
+
 type Editing =
   | { kind: 'rule'; original?: FirewallRule; chain: 'input' | 'forward' }
   | { kind: 'nat'; original?: PortForward }
@@ -41,9 +47,22 @@ type Editing =
 export function Firewall() {
   const config = useConfig();
   const ui = useUi();
-  const [tab, setTab] = useState<Tab>('input');
+  const [tab, setTab] = useState<Tab>(tabFromHash);
+  useEffect(() => {
+    const syncTab = () => setTab(tabFromHash());
+    window.addEventListener('hashchange', syncTab);
+    return () => window.removeEventListener('hashchange', syncTab);
+  }, []);
+  const selectTab = (next: Tab) => {
+    setTab(next);
+    window.location.hash = `/firewall?tab=${next}`;
+  };
   const [editing, setEditing] = useState<Editing | null>(null);
   const firewall = config.data?.firewall;
+  const missingMasquerade = firewall?.rules.forward.filter((rule) =>
+    rule.enabled !== false && rule.action === 'accept' && rule.route_via &&
+    wanMasqueradeWarning(config.data, rule.route_via),
+  ) ?? [];
   const operation = useSave(
     ({
       path,
@@ -95,7 +114,6 @@ export function Firewall() {
     <>
       <PageHeader
         title="Firewall"
-        description="Clear rules. Deliberate access. A safer network."
         actions={
           <>
             <button
@@ -117,6 +135,12 @@ export function Firewall() {
         }
       />
       <QueryNotice query={config} />
+      {tab === 'forward' && missingMasquerade.length > 0 && (
+        <div className="warning-banner" role="status">
+          <p>WAN selection has no configured masquerade for {missingMasquerade.map((rule) => `rule #${rule.id} (${rule.route_via})`).join(', ')}. Private LAN clients normally need source NAT unless the upstream router routes their subnet back.</p>
+          <button onClick={() => setEditing({ kind: 'policy' })}>Review masquerade</button>
+        </div>
+      )}
       <div className="summary-strip">
         <span>
           <Shield size={18} />
@@ -154,7 +178,7 @@ export function Firewall() {
                     : undefined;
           if (next) {
             event.preventDefault();
-            setTab(next);
+            selectTab(next);
             document.getElementById(`tab-${next}`)?.focus();
           }
         }}
@@ -168,7 +192,7 @@ export function Firewall() {
             id={`tab-${item}`}
             aria-controls="firewall-panel"
             className={tab === item ? 'selected' : ''}
-            onClick={() => setTab(item)}
+            onClick={() => selectTab(item)}
           >
             {item === 'nat'
               ? 'Port forwarding'
@@ -197,11 +221,13 @@ export function Firewall() {
                   : 'Reusable named sets'
           }
           subtitle={
-            tab === 'input' || tab === 'forward'
-              ? 'Rules run in order. The first matching verdict wins.'
-              : tab === 'nat'
-                ? 'Redirect incoming connections to an internal destination.'
-                : 'Share address and port collections across firewall rules.'
+            tab === 'forward'
+              ? 'Filter verdicts run in order. The first matching WAN selection pins each new IPv4 outbound connection.'
+              : tab === 'input'
+                ? 'Rules run in order. The first matching verdict wins.'
+                : tab === 'nat'
+                  ? 'Redirect incoming connections to an internal destination.'
+                  : 'Share address and port collections across firewall rules.'
           }
         >
           {config.isPending ? (
@@ -226,8 +252,10 @@ export function Firewall() {
                         {rule.interfaces_invert ? 'not ' : ''}
                         {rule.interfaces.join(', ') || 'Any ingress'}
                         {rule.oif ? ` → ${rule.oif}` : ''}
+                        {rule.route_via ? ` → WAN ${rule.route_via}` : ''}
                       </span>
                       <small className="cell-detail">
+                        {rule.route_via && rule.preserve_internal_routes === false ? 'Includes internal destinations · ' : ''}
                         {rule.proto?.join(', ') || 'Any protocol'}
                         {rule.dport ? ` · port ${formatPort(rule.dport)}` : ''}
                         {rule.saddr ? ` · from ${rule.saddr}` : ''}

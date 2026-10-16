@@ -25,7 +25,6 @@ export function Monitoring() {
     <>
       <PageHeader
         title="Monitoring"
-        description="Follow the flow. Understand what’s happening now."
         actions={
           <span className="live-label">
             <Activity size={16} />

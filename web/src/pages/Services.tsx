@@ -35,10 +35,7 @@ export function Services() {
   };
   return (
     <>
-      <PageHeader
-        title="Services"
-        description="The engines behind your network. Live state, real controls."
-      />
+      <PageHeader title="Services" />
       <div className="info-banner">
         <Server size={19} />
         <p>

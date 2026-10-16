@@ -65,7 +65,6 @@ export function Backups() {
     <>
       <PageHeader
         title="Configuration"
-        description="Validate what’s next. Keep a way back."
         actions={
           <button disabled={writes > 0} onClick={() => validate.mutate()}>
             <Shield size={16} />
