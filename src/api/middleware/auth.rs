@@ -64,9 +64,9 @@ impl IntoResponse for AuthError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{middleware, routing::get, Router};
     use crate::auth::jwt::generate_token;
     use crate::config::store::tests::TestStore;
+    use axum::{middleware, routing::get, Router};
 
     #[tokio::test]
     async fn authentication_uses_current_secret_and_requires_setup() {
@@ -74,20 +74,39 @@ mod tests {
         let mut config = fixture.store.get().await;
         config.auth.jwt_secret = "first-secret".into();
         fixture.store.set(config.clone()).await.unwrap();
-        let auth = AuthState { config: fixture.store.clone() };
-        let app = Router::new().route("/protected", get(|| async { "ok" }))
+        let auth = AuthState {
+            config: fixture.store.clone(),
+        };
+        let app = Router::new()
+            .route("/protected", get(|| async { "ok" }))
             .layer(middleware::from_fn_with_state(auth, require_auth));
         let server = axum_test::TestServer::new(app).unwrap();
         let first_token = generate_token("first-secret").unwrap();
         let first_header = format!("Bearer {}", first_token);
-        server.get("/protected").add_header(header::AUTHORIZATION, first_header.clone()).await.assert_status_unauthorized();
+        server
+            .get("/protected")
+            .add_header(header::AUTHORIZATION, first_header.clone())
+            .await
+            .assert_status_unauthorized();
         config.auth.password_hash = "configured".into();
         fixture.store.set(config.clone()).await.unwrap();
-        server.get("/protected").add_header(header::AUTHORIZATION, first_header.clone()).await.assert_status_ok();
+        server
+            .get("/protected")
+            .add_header(header::AUTHORIZATION, first_header.clone())
+            .await
+            .assert_status_ok();
         config.auth.jwt_secret = "second-secret".into();
         fixture.store.set(config).await.unwrap();
-        server.get("/protected").add_header(header::AUTHORIZATION, first_header).await.assert_status_unauthorized();
+        server
+            .get("/protected")
+            .add_header(header::AUTHORIZATION, first_header)
+            .await
+            .assert_status_unauthorized();
         let second_token = generate_token("second-secret").unwrap();
-        server.get("/protected").add_header(header::AUTHORIZATION, format!("Bearer {}", second_token)).await.assert_status_ok();
+        server
+            .get("/protected")
+            .add_header(header::AUTHORIZATION, format!("Bearer {}", second_token))
+            .await
+            .assert_status_ok();
     }
 }

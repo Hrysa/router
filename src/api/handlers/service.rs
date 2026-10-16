@@ -1,4 +1,7 @@
-use axum::{extract::{Path, State}, Json};
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use serde_json::{json, Value};
 
 use crate::api::error::ApiError;
@@ -42,30 +45,45 @@ pub async fn get_service_status(Path(name): Path<String>) -> Result<Json<Value>,
 }
 
 /// POST /api/service/:name/start — start service
-pub async fn start_service(State(state): State<AppState>, Path(name): Path<String>) -> Result<Json<Value>, ApiError> {
+pub async fn start_service(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, ApiError> {
     let _operation = state.config.lock_operation().await;
     let service = parse_service(&name)?;
     let manager = ServiceManager::new();
     manager.start(service).await?;
-    Ok(Json(json!({"status": "ok", "message": format!("{} started", service.display_name())})))
+    Ok(Json(
+        json!({"status": "ok", "message": format!("{} started", service.display_name())}),
+    ))
 }
 
 /// POST /api/service/:name/stop — stop service
-pub async fn stop_service(State(state): State<AppState>, Path(name): Path<String>) -> Result<Json<Value>, ApiError> {
+pub async fn stop_service(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, ApiError> {
     let _operation = state.config.lock_operation().await;
     let service = parse_service(&name)?;
     let manager = ServiceManager::new();
     manager.stop(service).await?;
-    Ok(Json(json!({"status": "ok", "message": format!("{} stopped", service.display_name())})))
+    Ok(Json(
+        json!({"status": "ok", "message": format!("{} stopped", service.display_name())}),
+    ))
 }
 
 /// POST /api/service/:name/restart — restart service
-pub async fn restart_service(State(state): State<AppState>, Path(name): Path<String>) -> Result<Json<Value>, ApiError> {
+pub async fn restart_service(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, ApiError> {
     let _operation = state.config.lock_operation().await;
     let service = parse_service(&name)?;
     let manager = ServiceManager::new();
     manager.restart(service).await?;
-    Ok(Json(json!({"status": "ok", "message": format!("{} restarted", service.display_name())})))
+    Ok(Json(
+        json!({"status": "ok", "message": format!("{} restarted", service.display_name())}),
+    ))
 }
 
 fn parse_service(name: &str) -> Result<Service, ApiError> {

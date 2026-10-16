@@ -32,9 +32,7 @@ fn detect_config() -> Result<Config> {
     tracing::info!(wan = %wan_name, "detected WAN interface");
 
     // Find first unused interface for LAN
-    let lan_name = system_ifaces.iter()
-        .find(|i| *i != &wan_name)
-        .cloned();
+    let lan_name = system_ifaces.iter().find(|i| *i != &wan_name).cloned();
 
     let lan_name = match lan_name {
         Some(name) => {
@@ -117,32 +115,75 @@ fn build_config(wan: InterfaceConfig, lan: InterfaceConfig, masq_oif: String) ->
                         action: Action::Accept,
                         comment: "allow-loopback".into(),
                         interfaces: vec!["lo".into()],
-                        oif: None, route_via: None, preserve_internal_routes: true, proto: None, dport: None, sport: None,
-                        saddr: None, daddr: None,
-                        interfaces_invert: false, saddr_invert: false, daddr_invert: false,
-                        state: None, rate: None,
-                        log: false, log_prefix: None, mark: None, tproxy_port: None, counter: false, enabled: true,
+                        oif: None,
+                        route_via: None,
+                        preserve_internal_routes: true,
+                        proto: None,
+                        dport: None,
+                        sport: None,
+                        saddr: None,
+                        daddr: None,
+                        interfaces_invert: false,
+                        saddr_invert: false,
+                        daddr_invert: false,
+                        state: None,
+                        rate: None,
+                        log: false,
+                        log_prefix: None,
+                        mark: None,
+                        tproxy_port: None,
+                        counter: false,
+                        enabled: true,
                     },
                     FirewallRule {
                         id: 0,
                         action: Action::Accept,
                         comment: "allow-established".into(),
-                        interfaces: vec![wan_name.clone(), lan_name.clone()], oif: None, route_via: None, preserve_internal_routes: true, proto: None, dport: None, sport: None,
-                        saddr: None, daddr: None,
-                        interfaces_invert: false, saddr_invert: false, daddr_invert: false,
+                        interfaces: vec![wan_name.clone(), lan_name.clone()],
+                        oif: None,
+                        route_via: None,
+                        preserve_internal_routes: true,
+                        proto: None,
+                        dport: None,
+                        sport: None,
+                        saddr: None,
+                        daddr: None,
+                        interfaces_invert: false,
+                        saddr_invert: false,
+                        daddr_invert: false,
                         state: Some(vec!["established".into(), "related".into()]),
-                        rate: None, log: false, log_prefix: None, mark: None, tproxy_port: None, counter: false, enabled: true,
+                        rate: None,
+                        log: false,
+                        log_prefix: None,
+                        mark: None,
+                        tproxy_port: None,
+                        counter: false,
+                        enabled: true,
                     },
                     FirewallRule {
                         id: 0,
                         action: Action::Accept,
                         comment: "allow-lan".into(),
                         interfaces: vec![lan_name.clone()],
-                        oif: None, route_via: None, preserve_internal_routes: true, proto: None, dport: None, sport: None,
-                        saddr: None, daddr: None,
-                        interfaces_invert: false, saddr_invert: false, daddr_invert: false,
-                        state: None, rate: None,
-                        log: false, log_prefix: None, mark: None, tproxy_port: None, counter: false, enabled: true,
+                        oif: None,
+                        route_via: None,
+                        preserve_internal_routes: true,
+                        proto: None,
+                        dport: None,
+                        sport: None,
+                        saddr: None,
+                        daddr: None,
+                        interfaces_invert: false,
+                        saddr_invert: false,
+                        daddr_invert: false,
+                        state: None,
+                        rate: None,
+                        log: false,
+                        log_prefix: None,
+                        mark: None,
+                        tproxy_port: None,
+                        counter: false,
+                        enabled: true,
                     },
                 ],
                 forward: vec![
@@ -151,22 +192,50 @@ fn build_config(wan: InterfaceConfig, lan: InterfaceConfig, masq_oif: String) ->
                         action: Action::Accept,
                         comment: "lan-to-wan".into(),
                         interfaces: vec![lan_name.clone()],
-                        oif: Some(masq_oif.clone()), route_via: None, preserve_internal_routes: true,
-                        proto: None, dport: None, sport: None,
-                        saddr: None, daddr: None,
-                        interfaces_invert: false, saddr_invert: false, daddr_invert: false,
-                        state: None, rate: None,
-                        log: false, log_prefix: None, mark: None, tproxy_port: None, counter: false, enabled: true,
+                        oif: Some(masq_oif.clone()),
+                        route_via: None,
+                        preserve_internal_routes: true,
+                        proto: None,
+                        dport: None,
+                        sport: None,
+                        saddr: None,
+                        daddr: None,
+                        interfaces_invert: false,
+                        saddr_invert: false,
+                        daddr_invert: false,
+                        state: None,
+                        rate: None,
+                        log: false,
+                        log_prefix: None,
+                        mark: None,
+                        tproxy_port: None,
+                        counter: false,
+                        enabled: true,
                     },
                     FirewallRule {
                         id: 0,
                         action: Action::Accept,
                         comment: "allow-established".into(),
-                        interfaces: vec![wan_name.clone(), lan_name.clone()], oif: None, route_via: None, preserve_internal_routes: true, proto: None, dport: None, sport: None,
-                        saddr: None, daddr: None,
-                        interfaces_invert: false, saddr_invert: false, daddr_invert: false,
+                        interfaces: vec![wan_name.clone(), lan_name.clone()],
+                        oif: None,
+                        route_via: None,
+                        preserve_internal_routes: true,
+                        proto: None,
+                        dport: None,
+                        sport: None,
+                        saddr: None,
+                        daddr: None,
+                        interfaces_invert: false,
+                        saddr_invert: false,
+                        daddr_invert: false,
                         state: Some(vec!["established".into(), "related".into()]),
-                        rate: None, log: false, log_prefix: None, mark: None, tproxy_port: None, counter: false, enabled: true,
+                        rate: None,
+                        log: false,
+                        log_prefix: None,
+                        mark: None,
+                        tproxy_port: None,
+                        counter: false,
+                        enabled: true,
                     },
                 ],
             },
@@ -200,9 +269,7 @@ fn build_config(wan: InterfaceConfig, lan: InterfaceConfig, masq_oif: String) ->
 /// List network interfaces from /sys/class/net/.
 fn list_system_interfaces() -> Result<Vec<String>> {
     let mut ifaces = Vec::new();
-    for entry in std::fs::read_dir("/sys/class/net")
-        .context("failed to read /sys/class/net")?
-    {
+    for entry in std::fs::read_dir("/sys/class/net").context("failed to read /sys/class/net")? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
         // Skip loopback and virtual interfaces
@@ -254,7 +321,11 @@ fn get_interface_ip(iface: &str) -> Option<String> {
 /// Detect WAN method and static config from current state.
 fn detect_wan_config(
     wan_name: &str,
-) -> (InterfaceMethod, Option<StaticConfig>, Option<DhcpClientConfig>) {
+) -> (
+    InterfaceMethod,
+    Option<StaticConfig>,
+    Option<DhcpClientConfig>,
+) {
     // Check if interface has a DHCP lease
     let lease_files = [
         format!("/var/lib/dhcp/dhclient.{}.leases", wan_name),
@@ -290,7 +361,11 @@ fn detect_wan_config(
         )
     } else {
         tracing::debug!(wan = wan_name, "WAN has no IP, defaulting to DHCP");
-        (InterfaceMethod::Dhcp, None, Some(DhcpClientConfig::default()))
+        (
+            InterfaceMethod::Dhcp,
+            None,
+            Some(DhcpClientConfig::default()),
+        )
     }
 }
 
@@ -363,7 +438,9 @@ mod tests {
         let yaml = serde_yaml::to_string(&config).unwrap();
         let restored: Config = serde_yaml::from_str(&yaml).unwrap();
         let rules = &restored.firewall.rules;
-        let ids: Vec<u32> = rules.input.iter()
+        let ids: Vec<u32> = rules
+            .input
+            .iter()
             .chain(rules.forward.iter())
             .map(|rule| rule.id)
             .collect();
@@ -382,8 +459,12 @@ mod tests {
         let mut rules = FirewallRules::default();
         assert_eq!(rules.next_id(), 1);
 
-        rules.input.push(serde_yaml::from_str("id: 12\naction: accept").unwrap());
-        rules.forward.push(serde_yaml::from_str("id: 7\naction: accept").unwrap());
+        rules
+            .input
+            .push(serde_yaml::from_str("id: 12\naction: accept").unwrap());
+        rules
+            .forward
+            .push(serde_yaml::from_str("id: 7\naction: accept").unwrap());
         assert_eq!(rules.next_id(), 13);
 
         rules.forward[0].id = 20;

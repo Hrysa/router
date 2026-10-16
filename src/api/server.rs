@@ -55,7 +55,10 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
     let protected = Router::new()
         // Health / status
         .route("/api/status", get(handlers::status::get_status))
-        .route("/api/status/system", get(handlers::status::get_system_stats))
+        .route(
+            "/api/status/system",
+            get(handlers::status::get_system_stats),
+        )
         // Config endpoints
         .route(
             "/api/config",
@@ -63,19 +66,20 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
         )
         .route(
             "/api/config/interfaces",
-            get(handlers::config::list_interfaces)
-                .post(handlers::config::create_interface),
+            get(handlers::config::list_interfaces).post(handlers::config::create_interface),
         )
         .route(
             "/api/config/interfaces/:name",
-            put(handlers::config::update_interface)
-                .delete(handlers::config::delete_interface),
+            put(handlers::config::update_interface).delete(handlers::config::delete_interface),
         )
         .route(
             "/api/config/firewall",
             post(handlers::config::patch_firewall),
         )
-        .route("/api/config/shaper", get(handlers::shaper::get_shaper).put(handlers::shaper::replace_shaper))
+        .route(
+            "/api/config/shaper",
+            get(handlers::shaper::get_shaper).put(handlers::shaper::replace_shaper),
+        )
         .route("/api/monitor/shaper", get(handlers::shaper::status))
         // System routing
         .route(
@@ -94,8 +98,7 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
         // Firewall rules CRUD
         .route(
             "/api/config/firewall/rules",
-            get(handlers::config::list_firewall_rules)
-                .post(handlers::config::add_firewall_rule),
+            get(handlers::config::list_firewall_rules).post(handlers::config::add_firewall_rule),
         )
         .route(
             "/api/config/firewall/rules/:id",
@@ -106,10 +109,7 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
             "/api/config/firewall/rules/:id/move",
             post(handlers::config::move_firewall_rule),
         )
-        .route(
-            "/api/firewall/stats",
-            get(handlers::config::firewall_stats),
-        )
+        .route("/api/firewall/stats", get(handlers::config::firewall_stats))
         // Firewall NAT CRUD
         .route(
             "/api/config/firewall/nat",
@@ -127,56 +127,44 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
         // nftables Sets CRUD
         .route(
             "/api/config/firewall/sets",
-            get(handlers::config::list_nft_sets)
-                .post(handlers::config::add_nft_set),
+            get(handlers::config::list_nft_sets).post(handlers::config::add_nft_set),
         )
         .route(
             "/api/config/firewall/sets/:name",
-            put(handlers::config::update_nft_set)
-                .delete(handlers::config::delete_nft_set),
+            put(handlers::config::update_nft_set).delete(handlers::config::delete_nft_set),
         )
         // DHCP
-        .route(
-            "/api/config/dhcp",
-            post(handlers::config::patch_dhcp),
-        )
+        .route("/api/config/dhcp", post(handlers::config::patch_dhcp))
         .route(
             "/api/config/dhcp/leases",
-            get(handlers::config::list_dhcp_leases)
-                .post(handlers::config::add_dhcp_lease),
+            get(handlers::config::list_dhcp_leases).post(handlers::config::add_dhcp_lease),
         )
         .route(
             "/api/config/dhcp/leases/:mac",
             delete(handlers::config::delete_dhcp_lease),
         )
         // Hooks
-        .route(
-            "/api/config/hooks",
-            post(handlers::config::patch_hooks),
-        )
+        .route("/api/config/hooks", post(handlers::config::patch_hooks))
         // sing-box config
         .route(
             "/api/singbox/config",
-            get(handlers::config::get_singbox_config)
-                .put(handlers::config::put_singbox_config),
+            get(handlers::config::get_singbox_config).put(handlers::config::put_singbox_config),
         )
         // Config operations
         .route(
             "/api/config/validate",
             post(handlers::config::validate_config),
         )
+        .route("/api/config/apply", post(handlers::config::apply_config))
         .route(
-            "/api/config/apply",
-            post(handlers::config::apply_config),
+            "/api/config/apply/status",
+            get(handlers::config::apply_status),
         )
         .route(
             "/api/config/rollback",
             post(handlers::config::rollback_config),
         )
-        .route(
-            "/api/config/backups",
-            get(handlers::config::list_backups),
-        )
+        .route("/api/config/backups", get(handlers::config::list_backups))
         .route(
             "/api/config/backups/:id/restore",
             post(handlers::config::restore_backup),
@@ -200,10 +188,7 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
             post(handlers::service::restart_service),
         )
         // Metrics endpoints (uPlot-compatible)
-        .route(
-            "/api/metrics",
-            get(handlers::metrics::get_metrics),
-        )
+        .route("/api/metrics", get(handlers::metrics::get_metrics))
         .route(
             "/api/metrics/current",
             get(handlers::metrics::get_current_metrics),
@@ -225,13 +210,12 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
             "/api/monitor/connections",
             get(handlers::monitor::get_connections),
         )
-        .route(
-            "/api/monitor/leases",
-            get(handlers::monitor::get_leases),
-        );
+        .route("/api/monitor/leases", get(handlers::monitor::get_leases));
 
-    let protected = protected
-        .layer(middleware::from_fn_with_state(state.auth.clone(), require_auth));
+    let protected = protected.layer(middleware::from_fn_with_state(
+        state.auth.clone(),
+        require_auth,
+    ));
 
     let app = Router::new()
         .merge(public_routes)
@@ -242,7 +226,8 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
     match (cfg.tls_cert, cfg.tls_key) {
         (Some(cert), Some(key)) => {
             tracing::info!("API server listening on https://{}", cfg.listen);
-            let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
+            let tls_config =
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
             axum_server::bind_rustls(cfg.listen.parse()?, tls_config)
                 .serve(app.into_make_service())
                 .await?;

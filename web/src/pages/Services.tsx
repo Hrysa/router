@@ -19,7 +19,6 @@ export function Services() {
     ({ name, command }: { name: string; command: string }) =>
       write(`/service/${encoded(name)}/${command}`),
     'Service command completed.',
-    false,
   );
   const control = async (name: string, display: string, command: string) => {
     if (

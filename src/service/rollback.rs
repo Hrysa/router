@@ -28,7 +28,15 @@ pub async fn rollback(
     let config = config_store.restore(&latest.id).await?;
 
     // Apply the restored config (force=true to apply all services)
-    let result = apply::apply(&config, &prev_config, config_path, service_manager, true).await?;
+    let result = apply::apply(
+        &config,
+        &prev_config,
+        config_path,
+        service_manager,
+        config_store.apply_state(),
+        true,
+    )
+    .await?;
     config_store.mark_applied(&config).await;
 
     tracing::info!("rollback completed successfully");
@@ -48,7 +56,15 @@ pub async fn rollback_to(
     let prev_config = config_store.get_applied().await;
 
     let config = config_store.restore(backup_id).await?;
-    let result = apply::apply(&config, &prev_config, config_path, service_manager, true).await?;
+    let result = apply::apply(
+        &config,
+        &prev_config,
+        config_path,
+        service_manager,
+        config_store.apply_state(),
+        true,
+    )
+    .await?;
     config_store.mark_applied(&config).await;
 
     tracing::info!("rollback to {} completed successfully", backup_id);

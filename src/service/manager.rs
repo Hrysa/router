@@ -1,7 +1,7 @@
+use crate::service::files::StagedFile;
 use anyhow::Result;
 use std::time::Duration;
 use tokio::process::Command;
-use crate::service::files::StagedFile;
 
 /// Services managed by routerd.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -250,7 +250,11 @@ impl ServiceManager {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            anyhow::bail!("kea-dhcp4 syntax check failed: {} {}", stderr.trim(), stdout.trim());
+            anyhow::bail!(
+                "kea-dhcp4 syntax check failed: {} {}",
+                stderr.trim(),
+                stdout.trim()
+            );
         }
 
         Ok(())
@@ -265,10 +269,7 @@ impl ServiceManager {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         // Format: MainPID=12345
-        let pid_str = stdout
-            .trim()
-            .strip_prefix("MainPID=")
-            .unwrap_or("0");
+        let pid_str = stdout.trim().strip_prefix("MainPID=").unwrap_or("0");
 
         Ok(pid_str.parse().unwrap_or(0))
     }

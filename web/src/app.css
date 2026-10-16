@@ -534,7 +534,7 @@ main {
 }
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 18px;
   margin-bottom: 22px;
 }
@@ -1621,6 +1621,7 @@ tbody tr:hover {
     padding: 28px 25px 0;
   }
   .stat-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
   }
   .stat-card {

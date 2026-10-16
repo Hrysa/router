@@ -60,38 +60,40 @@ mod tests {
 
     #[test]
     fn test_render_enabled() {
-        let mut config = Config::default();
-        config.vpn = Some(Vpn {
-            wireguard: Some(WireguardConfig {
-                enabled: true,
-                listen_port: 51820,
-                private_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
-                address: "10.10.0.1/24".into(),
-                peers: vec![
-                    WireguardPeer {
-                        name: "laptop".into(),
-                        public_key: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into(),
-                        allowed_ips: vec!["10.10.0.2/32".into()],
-                        endpoint: None,
-                        enabled: true,
-                    },
-                    WireguardPeer {
-                        name: "phone".into(),
-                        public_key: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=".into(),
-                        allowed_ips: vec!["10.10.0.3/32".into()],
-                        endpoint: Some("vpn.example.com:51820".into()),
-                        enabled: true,
-                    },
-                    WireguardPeer {
-                        name: "disabled-peer".into(),
-                        public_key: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=".into(),
-                        allowed_ips: vec!["10.10.0.4/32".into()],
-                        endpoint: None,
-                        enabled: false,
-                    },
-                ],
+        let config = Config {
+            vpn: Some(Vpn {
+                wireguard: Some(WireguardConfig {
+                    enabled: true,
+                    listen_port: 51820,
+                    private_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                    address: "10.10.0.1/24".into(),
+                    peers: vec![
+                        WireguardPeer {
+                            name: "laptop".into(),
+                            public_key: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into(),
+                            allowed_ips: vec!["10.10.0.2/32".into()],
+                            endpoint: None,
+                            enabled: true,
+                        },
+                        WireguardPeer {
+                            name: "phone".into(),
+                            public_key: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=".into(),
+                            allowed_ips: vec!["10.10.0.3/32".into()],
+                            endpoint: Some("vpn.example.com:51820".into()),
+                            enabled: true,
+                        },
+                        WireguardPeer {
+                            name: "disabled-peer".into(),
+                            public_key: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=".into(),
+                            allowed_ips: vec!["10.10.0.4/32".into()],
+                            endpoint: None,
+                            enabled: false,
+                        },
+                    ],
+                }),
             }),
-        });
+            ..Default::default()
+        };
 
         let output = render(&config).unwrap();
         assert!(output.contains("[Interface]"));
@@ -107,13 +109,15 @@ mod tests {
 
     #[test]
     fn test_render_disabled() {
-        let mut config = Config::default();
-        config.vpn = Some(Vpn {
-            wireguard: Some(WireguardConfig {
-                enabled: false,
-                ..Default::default()
+        let config = Config {
+            vpn: Some(Vpn {
+                wireguard: Some(WireguardConfig {
+                    enabled: false,
+                    ..Default::default()
+                }),
             }),
-        });
+            ..Default::default()
+        };
 
         let output = render(&config).unwrap();
         assert!(output.contains("disabled"));

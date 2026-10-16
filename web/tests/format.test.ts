@@ -6,6 +6,7 @@ import {
   parsePort,
   passwordError,
   role,
+  uptime,
 } from '../src/lib/format';
 
 describe('port specifications', () => {
@@ -45,6 +46,16 @@ test('traffic rates are bytes/s, not bits/s', () => {
   expect(bytes(0, true)).toBe('0 B/s');
   expect(bytes(undefined)).toBe('—');
   expect(bytes(NaN)).toBe('—');
+});
+test('uptime displays whole days and hours without minutes', () => {
+  expect(uptime(184920)).toBe('2d 3h');
+  expect(uptime(0)).toBe('0d 0h');
+  expect(uptime(3599.9)).toBe('0d 0h');
+  expect(uptime(3600)).toBe('0d 1h');
+  expect(uptime(86399)).toBe('0d 23h');
+  expect(uptime(86400)).toBe('1d 0h');
+  for (const value of [undefined, NaN, Infinity, -1])
+    expect(uptime(value)).toBe('—');
 });
 test('password limit counts UTF-8 bytes', () => {
   expect(passwordError('a'.repeat(72))).toBeUndefined();

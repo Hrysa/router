@@ -21,18 +21,12 @@ interface Confirmation {
 interface UiState {
   notify: (message: string, error?: boolean) => void;
   confirm: (options: Omit<Confirmation, 'resolve'>) => Promise<boolean>;
-  pending: boolean;
-  markPending: (value: boolean) => void;
 }
 const UiContext = createContext<UiState | null>(null);
-export const PENDING_KEY = 'routerd_pending_changes';
 
 export function UiProvider({ children }: { children: ReactNode }) {
   const [notices, setNotices] = useState<Notice[]>([]);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const [pending, setPending] = useState(
-    localStorage.getItem(PENDING_KEY) === 'true',
-  );
   const sequence = useRef(0);
   const session = useRef(getToken());
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
@@ -73,11 +67,6 @@ export function UiProvider({ children }: { children: ReactNode }) {
     <UiContext.Provider
       value={{
         notify,
-        pending,
-        markPending: (value) => {
-          setPending(value);
-          localStorage.setItem(PENDING_KEY, String(value));
-        },
         confirm: (options) =>
           new Promise((resolve) => setConfirmation({ ...options, resolve })),
       }}
@@ -137,19 +126,17 @@ export function useUi() {
 export function useSave<Arguments>(
   operation: (args: Arguments) => Promise<unknown>,
   message = 'Configuration saved. Apply to activate.',
-  pending = true,
 ) {
   const client = useQueryClient();
   const ui = useUi();
   return useMutation({
     mutationKey: ['write'],
     mutationFn: operation,
-    onSuccess: async () => {
-      if (pending) ui.markPending(true);
+    onSuccess: () => {
       ui.notify(message);
-      await client.invalidateQueries();
     },
     onError: (error) => ui.notify(errorMessage(error), true),
+    onSettled: () => client.invalidateQueries(),
   });
 }
 

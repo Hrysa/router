@@ -19,8 +19,13 @@ pub fn render(config: &Config) -> Result<String> {
             continue;
         }
 
-        let lease_secs = lease_duration_seconds(&pool.lease_time)
-            .ok_or_else(|| anyhow::anyhow!("invalid lease time for pool '{}': {}", pool.name, pool.lease_time))?;
+        let lease_secs = lease_duration_seconds(&pool.lease_time).ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid lease time for pool '{}': {}",
+                pool.name,
+                pool.lease_time
+            )
+        })?;
 
         // Gateway: pool override or default LAN IP
         let gateway = if pool.gateway.is_empty() {
@@ -52,18 +57,24 @@ pub fn render(config: &Config) -> Result<String> {
         });
 
         // Add static leases that fall within this pool's subnet
-        let pool_leases: Vec<&StaticLease> = config.dhcp.static_leases.iter()
+        let pool_leases: Vec<&StaticLease> = config
+            .dhcp
+            .static_leases
+            .iter()
             .filter(|lease| is_ip_in_cidr(&lease.ip, &pool.subnet))
             .collect();
 
         if !pool_leases.is_empty() {
-            let reservations: Vec<serde_json::Value> = pool_leases.iter().map(|lease| {
-                json!({
-                    "hw-address": lease.mac,
-                    "ip-address": lease.ip,
-                    "hostname": lease.hostname
+            let reservations: Vec<serde_json::Value> = pool_leases
+                .iter()
+                .map(|lease| {
+                    json!({
+                        "hw-address": lease.mac,
+                        "ip-address": lease.ip,
+                        "hostname": lease.hostname
+                    })
                 })
-            }).collect();
+                .collect();
             subnet["reservations"] = serde_json::Value::Array(reservations);
         }
 
@@ -71,11 +82,18 @@ pub fn render(config: &Config) -> Result<String> {
     }
 
     // Interfaces: bind to all LAN interfaces
-    let lan_ifaces: Vec<&str> = config.interfaces.items.iter()
+    let lan_ifaces: Vec<&str> = config
+        .interfaces
+        .items
+        .iter()
         .filter(|i| i.is_lan() && !i.name.is_empty())
         .map(|i| i.name.as_str())
         .collect();
-    let ifaces: Vec<&str> = if lan_ifaces.is_empty() { vec!["lo"] } else { lan_ifaces };
+    let ifaces: Vec<&str> = if lan_ifaces.is_empty() {
+        vec!["lo"]
+    } else {
+        lan_ifaces
+    };
 
     let kea_config = json!({
         "Dhcp4": {
@@ -110,7 +128,9 @@ fn is_ip_in_cidr(ip: &str, cidr: &str) -> bool {
         Ok(v) => v,
         Err(_) => return false,
     };
-    if ip_parts.len() != 4 { return false; }
+    if ip_parts.len() != 4 {
+        return false;
+    }
     let ip_u32 = ((ip_parts[0] as u32) << 24)
         | ((ip_parts[1] as u32) << 16)
         | ((ip_parts[2] as u32) << 8)
@@ -124,13 +144,19 @@ fn is_ip_in_cidr(ip: &str, cidr: &str) -> bool {
         Ok(v) => v,
         Err(_) => return false,
     };
-    if net_parts.len() != 4 { return false; }
+    if net_parts.len() != 4 {
+        return false;
+    }
     let net_u32 = ((net_parts[0] as u32) << 24)
         | ((net_parts[1] as u32) << 16)
         | ((net_parts[2] as u32) << 8)
         | (net_parts[3] as u32);
 
-    let mask = if prefix_len == 0 { 0 } else { !0u32 << (32 - prefix_len) };
+    let mask = if prefix_len == 0 {
+        0
+    } else {
+        !0u32 << (32 - prefix_len)
+    };
     (ip_u32 & mask) == (net_u32 & mask)
 }
 
@@ -164,7 +190,10 @@ mod tests {
                 pools: vec![DhcpPool {
                     name: "default".into(),
                     subnet: subnet.into(),
-                    range: DhcpRange { start: start.into(), end: end.into() },
+                    range: DhcpRange {
+                        start: start.into(),
+                        end: end.into(),
+                    },
                     ..DhcpPool::default()
                 }],
                 ..Dhcp::default()
@@ -206,13 +235,19 @@ mod tests {
                     DhcpPool {
                         name: "main".into(),
                         subnet: "192.168.1.0/24".into(),
-                        range: DhcpRange { start: "192.168.1.100".into(), end: "192.168.1.200".into() },
+                        range: DhcpRange {
+                            start: "192.168.1.100".into(),
+                            end: "192.168.1.200".into(),
+                        },
                         ..DhcpPool::default()
                     },
                     DhcpPool {
                         name: "guest".into(),
                         subnet: "192.168.2.0/24".into(),
-                        range: DhcpRange { start: "192.168.2.100".into(), end: "192.168.2.200".into() },
+                        range: DhcpRange {
+                            start: "192.168.2.100".into(),
+                            end: "192.168.2.200".into(),
+                        },
                         gateway: "192.168.2.1".into(),
                         ..DhcpPool::default()
                     },
@@ -234,8 +269,16 @@ mod tests {
     fn test_render_static_leases() {
         let mut config = make_config_with_pool("192.168.1.0/24", "192.168.1.100", "192.168.1.250");
         config.dhcp.static_leases = vec![
-            StaticLease { mac: "AA:BB:CC:DD:EE:01".into(), ip: "192.168.1.10".into(), hostname: "nas".into() },
-            StaticLease { mac: "AA:BB:CC:DD:EE:02".into(), ip: "192.168.1.11".into(), hostname: "printer".into() },
+            StaticLease {
+                mac: "AA:BB:CC:DD:EE:01".into(),
+                ip: "192.168.1.10".into(),
+                hostname: "nas".into(),
+            },
+            StaticLease {
+                mac: "AA:BB:CC:DD:EE:02".into(),
+                ip: "192.168.1.11".into(),
+                hostname: "printer".into(),
+            },
         ];
         let output = render(&config).unwrap();
         assert!(output.contains("\"reservations\""));
@@ -263,7 +306,10 @@ mod tests {
                 pools: vec![DhcpPool {
                     name: "disabled".into(),
                     subnet: "192.168.1.0/24".into(),
-                    range: DhcpRange { start: "192.168.1.100".into(), end: "192.168.1.200".into() },
+                    range: DhcpRange {
+                        start: "192.168.1.100".into(),
+                        end: "192.168.1.200".into(),
+                    },
                     enabled: false,
                     ..DhcpPool::default()
                 }],

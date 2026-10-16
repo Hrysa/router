@@ -5,7 +5,11 @@ use serde_json::{json, Value};
 pub async fn get_system_monitor() -> Json<Value> {
     let uptime_secs = std::fs::read_to_string("/proc/uptime")
         .ok()
-        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()))
+        .and_then(|s| {
+            s.split_whitespace()
+                .next()
+                .and_then(|v| v.parse::<f64>().ok())
+        })
         .unwrap_or(0.0);
 
     let days = (uptime_secs / 86400.0) as u64;
@@ -144,7 +148,9 @@ async fn read_kea_leases() -> anyhow::Result<Vec<serde_json::Value>> {
 
     for line in &all_lines {
         let fields: Vec<&str> = line.split(',').collect();
-        if fields.len() < 10 { continue; }
+        if fields.len() < 10 {
+            continue;
+        }
 
         let address = fields[0].trim().to_string();
         let hwaddr = fields[1].trim().to_string();
@@ -158,24 +164,36 @@ async fn read_kea_leases() -> anyhow::Result<Vec<serde_json::Value>> {
 
         // Keep the entry with the latest expiry
         let entry = by_ip.entry(address.clone());
-        entry.and_modify(|e| {
-            if expire > e.3 { *e = (address.clone(), hwaddr.clone(), hostname.clone(), expire); }
-        }).or_insert((address, hwaddr, hostname, expire));
+        entry
+            .and_modify(|e| {
+                if expire > e.3 {
+                    *e = (address.clone(), hwaddr.clone(), hostname.clone(), expire);
+                }
+            })
+            .or_insert((address, hwaddr, hostname, expire));
     }
 
     let now = chrono::Utc::now().timestamp();
-    let mut leases: Vec<Value> = by_ip.into_values()
-        .filter(|(_, _, _, expire)| *expire > now)  // skip expired
+    let mut leases: Vec<Value> = by_ip
+        .into_values()
+        .filter(|(_, _, _, expire)| *expire > now) // skip expired
         .map(|(address, mac, hostname, expire)| {
             let expires = chrono::DateTime::from_timestamp(expire, 0)
-                .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+                .map(|dt| {
+                    dt.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string()
+                })
                 .unwrap_or_default();
             json!({ "address": address, "mac": mac, "hostname": hostname, "expires": expires })
         })
         .collect();
 
     leases.sort_by(|a, b| {
-        a["address"].as_str().unwrap_or("").cmp(b["address"].as_str().unwrap_or(""))
+        a["address"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["address"].as_str().unwrap_or(""))
     });
 
     Ok(leases)

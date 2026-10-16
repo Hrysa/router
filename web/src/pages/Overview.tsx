@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowRight,
@@ -8,7 +8,10 @@ import {
   Layers,
   Shield,
 } from 'react-feather';
-import { bytes, latest, role } from '../lib/format';
+import { bytes, latest, role, uptime } from '../lib/format';
+import { cpuUsage } from '../lib/cpu';
+import type { SystemStats } from '../lib/types';
+import { interfaceDisplayName } from '../lib/interfaces';
 import {
   useConfig,
   useInterfaces,
@@ -29,6 +32,13 @@ export function Overview() {
   const system = useSystem();
   const stats = useSystemStats();
   const status = useStatus();
+  const previousCpu = useRef<SystemStats['cpu'] | undefined>(undefined);
+  const [cpu, setCpu] = useState<number | undefined>(undefined);
+  const cpuCounters = stats.isError ? undefined : stats.data?.cpu;
+  useEffect(() => {
+    setCpu(cpuUsage(previousCpu.current, cpuCounters));
+    previousCpu.current = cpuCounters;
+  }, [cpuCounters, stats.dataUpdatedAt]);
   const [selection, setSelection] = useState('');
   const interfaces = Array.from(
     new Set([
@@ -42,6 +52,7 @@ export function Overview() {
   const name = interfaces.includes(selection)
     ? selection
     : (wan ?? interfaces[0] ?? '');
+  const displayName = interfaceDisplayName(name, config.data?.interfaces.items);
   const traffic = metrics.data?.interfaces[name];
   const memory = stats.data?.memory;
   const activeServices = services.data?.services.filter(
@@ -54,7 +65,7 @@ export function Overview() {
         actions={
           <span className="live-label">
             <span className="status-dot" />
-            Updates every 5 seconds
+            Updates every 2 seconds
           </span>
         }
       />
@@ -76,7 +87,7 @@ export function Overview() {
           </div>
           <div className="stat-caption">
             <span className="chart-key rx" />
-            {name || 'No interface selected'}
+            {displayName || 'No interface selected'}
           </div>
         </Card>
         <Card className="stat-card">
@@ -91,7 +102,23 @@ export function Overview() {
           </div>
           <div className="stat-caption">
             <span className="chart-key tx" />
-            {name || 'No interface selected'}
+            {displayName || 'No interface selected'}
+          </div>
+        </Card>
+        <Card className="stat-card">
+          <div className="stat-top">
+            <span>CPU usage</span>
+            <span className="stat-icon blue">
+              <Cpu size={18} />
+            </span>
+          </div>
+          <div className="stat-value">
+            {cpu === undefined ? '—' : `${cpu.toFixed(1)}%`}
+          </div>
+          <div className="stat-caption">
+            {cpu === undefined
+              ? 'Waiting for CPU samples'
+              : 'Across all CPU cores'}
           </div>
         </Card>
         <Card className="stat-card">
@@ -118,7 +145,7 @@ export function Overview() {
             </span>
           </div>
           <div className="stat-value uptime-value">
-            {system.data?.uptime_human ?? '—'}
+            {uptime(system.data?.uptime_seconds)}
           </div>
           <div className="stat-caption">
             {system.data?.hostname ?? 'Waiting for router'}
@@ -137,7 +164,11 @@ export function Overview() {
               onChange={(event) => setSelection(event.target.value)}
             >
               {interfaces.length ? (
-                interfaces.map((item) => <option key={item}>{item}</option>)
+                interfaces.map((item) => (
+                  <option key={item} value={item}>
+                    {interfaceDisplayName(item, config.data?.interfaces.items)}
+                  </option>
+                ))
               ) : (
                 <option value="">No interfaces</option>
               )}
@@ -150,7 +181,7 @@ export function Overview() {
             timestamps={metrics.data.timestamps}
             received={traffic.rx_bps}
             transmitted={traffic.tx_bps}
-            label={`${name} traffic`}
+            label={`${displayName} traffic`}
           />
         ) : (
           <Empty
@@ -200,7 +231,12 @@ export function Overview() {
                       <Layers size={20} />
                     </span>
                     <div className="grow">
-                      <strong>{iface.label || iface.name}</strong>
+                      <strong>
+                        {interfaceDisplayName(
+                          iface.name,
+                          config.data?.interfaces.items,
+                        )}
+                      </strong>
                       <span className="mono subtle">
                         {iface.name} <span className="footer-dot">·</span>{' '}
                         {iface.static_config?.address ||

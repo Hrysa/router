@@ -19,7 +19,7 @@ export function TrafficChart({
     return (
       <Empty
         title="Collecting traffic samples"
-        description="The router collects a sample every five seconds. History appears after two samples."
+        description="The router collects a sample every two seconds. History appears after two samples."
       />
     );
   const maximum = Math.max(

@@ -65,33 +65,73 @@ fn parse_meminfo() -> Value {
     })
 }
 
-fn parse_kb_value(s: &str) -> u64 {
-    s.trim()
+fn parse_kb_value(value: &str) -> u64 {
+    value
         .split_whitespace()
         .next()
-        .and_then(|n| n.parse().ok())
+        .and_then(|part| part.parse().ok())
         .unwrap_or(0)
 }
 
 async fn get_cpu_usage() -> Value {
-    // Simple CPU usage snapshot from /proc/stat
     let content = std::fs::read_to_string("/proc/stat").unwrap_or_default();
-    if let Some(line) = content.lines().find(|l| l.starts_with("cpu ")) {
-        let parts: Vec<u64> = line
-            .split_whitespace()
-            .skip(1)
-            .filter_map(|s| s.parse().ok())
-            .collect();
+    match parse_cpu_counters(&content) {
+        Some((idle, total)) => json!({"idle": idle, "total": total}),
+        None => json!({}),
+    }
+}
 
-        if parts.len() >= 4 {
-            let idle = parts[3];
-            let total: u64 = parts.iter().sum();
-            return json!({
-                "idle": idle,
-                "total": total,
-            });
-        }
+fn parse_cpu_counters(content: &str) -> Option<(u64, u64)> {
+    let line = content
+        .lines()
+        .find(|line| line.split_whitespace().next() == Some("cpu"))?;
+    let parts = line
+        .split_whitespace()
+        .skip(1)
+        .take(8)
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let idle = parts
+        .get(3)?
+        .checked_add(parts.get(4).copied().unwrap_or(0))?;
+    let total = parts
+        .iter()
+        .try_fold(0u64, |total, value| total.checked_add(*value))?;
+    Some((idle, total))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_counters_include_iowait_without_double_counting_guest_time() {
+        assert_eq!(
+            parse_cpu_counters("cpu 100 20 30 400 50 6 7 8 10 2\ncpu0 1 2 3 4"),
+            Some((450, 621))
+        );
     }
 
-    json!({})
+    #[test]
+    fn cpu_counters_support_older_four_field_snapshots() {
+        assert_eq!(
+            parse_cpu_counters("cpu0 1 2 3 4\ncpu\t10 20 30 40"),
+            Some((40, 100))
+        );
+    }
+
+    #[test]
+    fn cpu_counters_reject_missing_malformed_and_overflowing_fields() {
+        for content in [
+            "",
+            "cpu0 1 2 3 4",
+            "cpu 1 2 3",
+            "cpu 1 invalid 3 4",
+            "cpu -1 2 3 4",
+            "cpu 18446744073709551615 1 0 0",
+        ] {
+            assert_eq!(parse_cpu_counters(content), None);
+        }
+    }
 }

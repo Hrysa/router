@@ -1,7 +1,12 @@
 import { useLayoutEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { ChevronDown } from 'react-feather';
 import { list } from '../lib/format';
-import { interfaceOptions, toggleInterface } from '../lib/interfaces';
+import {
+  interfaceDisplayName,
+  interfaceOptions,
+  toggleInterface,
+} from '../lib/interfaces';
 import { useConfig, useInterfaces } from '../lib/queries';
 
 export function InterfacePicker({
@@ -28,6 +33,7 @@ export function InterfacePicker({
   exclude?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const container = useRef<HTMLDivElement>(null);
   const [placement, setPlacement] = useState({ above: false, height: 240 });
   useLayoutEffect(() => {
@@ -49,9 +55,13 @@ export function InterfacePicker({
   }, [open]);
   const config = useConfig();
   const live = useInterfaces();
+  const configured = config.data?.interfaces.items;
   const selected = list(value);
+  const displayValue = selected
+    .map((name) => interfaceDisplayName(name, configured))
+    .join(', ');
   const options = interfaceOptions(
-    config.data?.interfaces.items,
+    configured,
     live.data?.interfaces,
     selected,
     exclude,
@@ -75,9 +85,14 @@ export function InterfacePicker({
       <div className="interface-picker-control">
         <input
           id={id}
-          value={value}
+          value={editing ? value : displayValue}
           onChange={(event) => onChange(event.target.value)}
-          onFocus={() => setOpen(true)}
+          onFocus={(event) => {
+            flushSync(() => setEditing(true));
+            event.currentTarget.select();
+            setOpen(true);
+          }}
+          onBlur={() => setEditing(false)}
           placeholder={placeholder}
           required={required}
           disabled={disabled}
@@ -106,35 +121,41 @@ export function InterfacePicker({
           <small>
             {multiple ? 'Select any interfaces' : 'Select one interface'} or
             type
-            {multiple ? ' comma-separated names' : ' a custom name'} above.
+            {multiple
+              ? ' comma-separated device names'
+              : ' a custom device name'}{' '}
+            above.
           </small>
           <div
             className="interface-picker-list"
             role="group"
             aria-label={`${label} options`}
           >
-            {options.map((option) => (
-              <label key={option.name} className="interface-picker-option">
-                <input
-                  type="checkbox"
-                  aria-label={option.name}
-                  checked={selected.includes(option.name)}
-                  disabled={disabled}
-                  onChange={() =>
-                    onChange(toggleInterface(value, option.name, multiple))
-                  }
-                />
-                <span>
-                  <strong>{option.name}</strong>
-                  {option.label && <span> — {option.label}</span>}
-                  <small>
-                    {option.source}
-                    {option.up !== undefined &&
-                      ` · ${option.up ? 'Up' : 'Down'}`}
-                  </small>
-                </span>
-              </label>
-            ))}
+            {options.map((option) => {
+              const displayName = interfaceDisplayName(option.name, configured);
+              return (
+                <label key={option.name} className="interface-picker-option">
+                  <input
+                    type="checkbox"
+                    aria-label={displayName}
+                    checked={selected.includes(option.name)}
+                    disabled={disabled}
+                    onChange={() =>
+                      onChange(toggleInterface(value, option.name, multiple))
+                    }
+                  />
+                  <span>
+                    <strong>{displayName}</strong>
+                    <small>
+                      {displayName !== option.name && `${option.name} · `}
+                      {option.source}
+                      {option.up !== undefined &&
+                        ` · ${option.up ? 'Up' : 'Down'}`}
+                    </small>
+                  </span>
+                </label>
+              );
+            })}
           </div>
           {!options.length && (
             <small>No interfaces available yet. Enter a name above.</small>

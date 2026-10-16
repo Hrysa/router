@@ -14,7 +14,9 @@ export async function mockRouter(
   page: Page,
   options: { authenticated?: boolean; passwordConfigured?: boolean } = {},
 ) {
+  const raw = '{\n  // Keep this comment\n  "log": { "level": "info" }\n}\n';
   const config: Config = {
+    singbox: { config: raw },
     routing: { routes: [] },
     interfaces: {
       items: [
@@ -95,9 +97,20 @@ export async function mockRouter(
     config,
     expired: false,
     passwordConfigured: options.passwordConfigured ?? true,
-    raw: '{\n  // Keep this comment\n  "log": { "level": "info" }\n}\n',
+    get raw() {
+      return this.config.singbox?.config ?? '';
+    },
+    set raw(value: string) {
+      this.config.singbox = { config: value };
+    },
+    deployedRaw: raw,
     writes: [] as { path: string; method: string; body: unknown }[],
     unexpected: [] as string[],
+    applied: { config: JSON.stringify(config) } as {
+      config: string;
+    } | null,
+    applyError: false,
+    cpu: { idle: 5000, total: 6000 } as { idle?: number; total?: number },
   };
   await page.addInitScript((authenticated) => {
     localStorage.clear();
@@ -130,10 +143,39 @@ export async function mockRouter(
       : undefined;
     if (method !== 'GET') state.writes.push({ path, method, body });
     if (method === 'GET') {
-      if (path === '/config/shaper') return reply(state.config.shaper ?? { profiles: [] });
-      if (path === '/monitor/shaper') return reply({ timestamp_ms: Date.now(), reconnect_active: false, profiles: [] });
-      if (path === '/config/routing') return reply({ routes: state.config.routing.routes, wan_tables: [{ name: 'eth0', interface: 'eth0', table: 100 }] });
-      if (path === '/monitor/routes') return reply({ routes: [{ family: 'ipv4', dst: 'default', gateway: '192.0.2.1', dev: 'eth0', table: 'main', metric: 1024, protocol: 'dhcp' }] });
+      if (path === '/config/apply/status')
+        return reply({
+          pending:
+            !state.applied ||
+            state.applied.config !== JSON.stringify(state.config),
+        });
+      if (path === '/config/shaper')
+        return reply(state.config.shaper ?? { profiles: [] });
+      if (path === '/monitor/shaper')
+        return reply({
+          timestamp_ms: Date.now(),
+          reconnect_active: false,
+          profiles: [],
+        });
+      if (path === '/config/routing')
+        return reply({
+          routes: state.config.routing.routes,
+          wan_tables: [{ name: 'eth0', interface: 'eth0', table: 100 }],
+        });
+      if (path === '/monitor/routes')
+        return reply({
+          routes: [
+            {
+              family: 'ipv4',
+              dst: 'default',
+              gateway: '192.0.2.1',
+              dev: 'eth0',
+              table: 'main',
+              metric: 1024,
+              protocol: 'dhcp',
+            },
+          ],
+        });
       if (path === '/config') {
         const wire = structuredClone(state.config);
         if (!wire.interfaces.items.length)
@@ -162,7 +204,7 @@ export async function mockRouter(
             available_kb: 2800000,
             usage_percent: 30,
           },
-          cpu: { idle: 5000, total: 6000 },
+          cpu: state.cpu,
         });
       if (path === '/monitor/interfaces')
         return reply({
@@ -226,7 +268,7 @@ export async function mockRouter(
       if (path === '/metrics') {
         const timestamps = Array.from(
           { length: 60 },
-          (_, index) => 1792123200 + index * 5,
+          (_, index) => 1792123200 + index * 2,
         );
         return reply({
           timestamps,
@@ -260,13 +302,20 @@ export async function mockRouter(
     if (
       path === '/config/apply' ||
       /^\/config\/backups\/[^/]+\/restore$/.test(path)
-    )
+    ) {
+      if (state.applyError) {
+        state.applied = null;
+        return reply({ error: { message: 'Apply failed' } }, 500);
+      }
+      if (state.config.singbox) state.deployedRaw = state.raw;
+      state.applied = { config: JSON.stringify(state.config) };
       return reply({
         success: true,
         errors: [],
         services_restarted: ['networking'],
         changeset: {},
       });
+    }
     if (path === '/config/dhcp') {
       state.config.dhcp = body as Config['dhcp'];
       return reply({ status: 'ok' });
@@ -302,15 +351,20 @@ export async function mockRouter(
       return reply({ status: 'ok' });
     }
     if (path === '/config/routing/routes') {
-      const id = Math.max(0, ...state.config.routing.routes.map((route) => route.id)) + 1;
+      const id =
+        Math.max(0, ...state.config.routing.routes.map((route) => route.id)) +
+        1;
       state.config.routing.routes.push({ ...(body as StaticRoute), id });
       return reply({ status: 'ok' });
     }
     if (path.startsWith('/config/routing/routes/')) {
       const id = Number(path.split('/').at(-1));
-      state.config.routing.routes = method === 'DELETE'
-        ? state.config.routing.routes.filter((route) => route.id !== id)
-        : state.config.routing.routes.map((route) => route.id === id ? body as StaticRoute : route);
+      state.config.routing.routes =
+        method === 'DELETE'
+          ? state.config.routing.routes.filter((route) => route.id !== id)
+          : state.config.routing.routes.map((route) =>
+              route.id === id ? (body as StaticRoute) : route,
+            );
       return reply({ status: 'ok' });
     }
     if (path.startsWith('/config/interfaces/')) {

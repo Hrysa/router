@@ -1,17 +1,21 @@
 use anyhow::{Context, Result};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+#[cfg(test)]
+use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub struct StagedFile {
     path: PathBuf,
 }
 
+#[cfg(test)]
 pub struct StagedDirectory {
     path: PathBuf,
 }
 
+#[cfg(test)]
 impl StagedDirectory {
     pub fn new() -> Result<Self> {
         let path = std::env::temp_dir().join(format!("routerd-{}", uuid::Uuid::new_v4()));
@@ -24,6 +28,7 @@ impl StagedDirectory {
     }
 }
 
+#[cfg(test)]
 impl Drop for StagedDirectory {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);

@@ -8,6 +8,18 @@ export interface InterfaceOption {
   source: 'Configured' | 'Referenced' | 'Detected' | 'Custom';
 }
 
+export function interfaceDisplayName(
+  name: string,
+  configured: InterfaceConfig[] = [],
+): string {
+  const iface =
+    configured.find((item) => item.name === name) ??
+    (name === 'ppp0'
+      ? configured.find((item) => item.method === 'pppoe')
+      : undefined);
+  return iface?.label?.trim() || name;
+}
+
 export function interfaceOptions(
   configured: InterfaceConfig[] = [],
   detected: InterfaceDetail[] = [],

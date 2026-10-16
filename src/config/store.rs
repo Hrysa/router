@@ -12,6 +12,7 @@ pub struct ConfigStore {
     inner: Arc<RwLock<Config>>,
     operation: Mutex<()>,
     applied: RwLock<Config>,
+    apply_state: crate::service::apply::ApplyState,
     path: PathBuf,
     backup_dir: PathBuf,
 }
@@ -35,6 +36,7 @@ impl ConfigStore {
 
         Ok(Self {
             applied: RwLock::new(config.clone()),
+            apply_state: crate::service::apply::ApplyState::default(),
             inner: Arc::new(RwLock::new(config)),
             operation: Mutex::new(()),
             path,
@@ -53,6 +55,10 @@ impl ConfigStore {
 
     pub async fn get_applied(&self) -> Config {
         self.applied.read().await.clone()
+    }
+
+    pub fn apply_state(&self) -> &crate::service::apply::ApplyState {
+        &self.apply_state
     }
 
     pub async fn mark_applied(&self, config: &Config) {
@@ -81,7 +87,9 @@ impl ConfigStore {
     /// Create a timestamped backup of the current config file.
     pub async fn backup(&self) -> Result<PathBuf> {
         let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S-%f");
-        let backup_path = self.backup_dir.join(format!("{}-{}.yml", timestamp, uuid::Uuid::new_v4()));
+        let backup_path =
+            self.backup_dir
+                .join(format!("{}-{}.yml", timestamp, uuid::Uuid::new_v4()));
 
         if self.path.exists() {
             let content = fs::read(&self.path)?;
@@ -115,13 +123,17 @@ impl ConfigStore {
             })
             .collect();
 
-        entries.sort_by(|a, b| b.created.cmp(&a.created));
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.created));
         Ok(entries)
     }
 
     /// Restore config from a specific backup.
     pub async fn restore(&self, backup_id: &str) -> Result<Config> {
-        if backup_id.is_empty() || !backup_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
+        if backup_id.is_empty()
+            || !backup_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        {
             anyhow::bail!("invalid backup ID");
         }
         // Try both .yml and .yaml extensions
@@ -146,7 +158,6 @@ impl ConfigStore {
         tracing::info!("config restored from backup: {}", backup_id);
         Ok(config)
     }
-
 }
 
 #[derive(Debug, Clone)]
@@ -168,12 +179,16 @@ pub(crate) mod tests {
 
     impl TestStore {
         pub fn new() -> Self {
-            let directory = std::env::temp_dir().join(format!("routerd-store-test-{}", uuid::Uuid::new_v4()));
+            let directory =
+                std::env::temp_dir().join(format!("routerd-store-test-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&directory).unwrap();
             let config = Config::default();
             crate::service::files::atomic_write(
-                &directory.join(CONFIG_FILENAME), serde_yaml::to_string(&config).unwrap().as_bytes(), 0o600,
-            ).unwrap();
+                &directory.join(CONFIG_FILENAME),
+                serde_yaml::to_string(&config).unwrap().as_bytes(),
+                0o600,
+            )
+            .unwrap();
             let store = Arc::new(ConfigStore::new(directory.to_str().unwrap()).unwrap());
             Self { store, directory }
         }
@@ -183,6 +198,44 @@ pub(crate) mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.directory).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn singbox_jsonc_round_trips_through_config_and_backups() {
+        let fixture = TestStore::new();
+        let initial = fixture.store.get().await;
+        assert!(initial.singbox.is_none());
+        let raw = "{\n  // preserve this comment\n  \"log\": { \"level\": \"info\" }\n}\n";
+        let mut config = initial.clone();
+        config.singbox = Some(super::super::schema::Singbox { config: raw.into() });
+        fixture.store.set(config.clone()).await.unwrap();
+        let reloaded = ConfigStore::new(fixture.directory.to_str().unwrap()).unwrap();
+        assert_eq!(reloaded.get().await.singbox.unwrap().config, raw);
+        assert_eq!(fixture.store.get_applied().await, initial);
+        let backup = fixture.store.backup().await.unwrap();
+        fixture.store.set(initial).await.unwrap();
+        fixture
+            .store
+            .restore(backup.file_stem().unwrap().to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(fixture.store.get().await, config);
+        assert_eq!(
+            fs::metadata(backup).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_singbox_config_cannot_replace_saved_configuration() {
+        let fixture = TestStore::new();
+        let initial = fixture.store.get().await;
+        let mut config = initial.clone();
+        config.singbox = Some(super::super::schema::Singbox {
+            config: "  \n".into(),
+        });
+        assert!(fixture.store.set(config).await.is_err());
+        assert_eq!(fixture.store.get().await, initial);
     }
 
     #[tokio::test]
@@ -196,10 +249,21 @@ pub(crate) mod tests {
         let backups = fixture.store.list_backups().unwrap();
         assert_eq!(backups.len(), 3);
         for entry in fs::read_dir(fixture.directory.join("backups")).unwrap() {
-            assert_eq!(entry.unwrap().metadata().unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                entry.unwrap().metadata().unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
-        assert_eq!(fs::metadata(&fixture.store.path).unwrap().permissions().mode() & 0o777, 0o600);
-        let disk: Config = serde_yaml::from_str(&fs::read_to_string(&fixture.store.path).unwrap()).unwrap();
+        assert_eq!(
+            fs::metadata(&fixture.store.path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let disk: Config =
+            serde_yaml::from_str(&fs::read_to_string(&fixture.store.path).unwrap()).unwrap();
         assert_eq!(disk, fixture.store.get().await);
         assert_ne!(disk, fixture.store.get_applied().await);
     }

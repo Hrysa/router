@@ -34,12 +34,9 @@ pub struct ValidationError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message, details) = match &self {
-            ApiError::NotFound(msg) => (
-                StatusCode::NOT_FOUND,
-                "NOT_FOUND",
-                msg.clone(),
-                Value::Null,
-            ),
+            ApiError::NotFound(msg) => {
+                (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone(), Value::Null)
+            }
             ApiError::BadRequest(msg) => (
                 StatusCode::BAD_REQUEST,
                 "BAD_REQUEST",
@@ -52,12 +49,7 @@ impl IntoResponse for ApiError {
                 "validation failed".into(),
                 json!(errors),
             ),
-            ApiError::Conflict(msg) => (
-                StatusCode::CONFLICT,
-                "CONFLICT",
-                msg.clone(),
-                Value::Null,
-            ),
+            ApiError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone(), Value::Null),
             ApiError::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "UNAUTHORIZED",

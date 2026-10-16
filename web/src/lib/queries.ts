@@ -21,10 +21,12 @@ export const useConfig = () =>
     queryFn: ({ signal }) => getConfig(signal),
   });
 export const useInterfaces = () =>
-  useApi<{ interfaces: InterfaceDetail[] }>('/monitor/interfaces', 5000);
+  useApi<{ interfaces: InterfaceDetail[] }>('/monitor/interfaces', 2000);
 export const useServices = () =>
   useApi<{ services: Service[] }>('/services', 10000);
-export const useMetrics = () => useApi<Metrics>('/metrics', 5000);
+export const useMetrics = () => useApi<Metrics>('/metrics', 2000);
 export const useSystem = () => useApi<SystemInfo>('/monitor/system', 10000);
-export const useSystemStats = () => useApi<SystemStats>('/status/system', 5000);
+export const useSystemStats = () => useApi<SystemStats>('/status/system', 2000);
 export const useStatus = () => useApi<Status>('/status', 10000);
+export const useApplyStatus = () =>
+  useApi<{ pending: boolean }>('/config/apply/status', 5000);

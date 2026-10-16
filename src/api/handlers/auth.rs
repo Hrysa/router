@@ -39,15 +39,16 @@ pub async fn login(
         return Err(ApiError::Unauthorized);
     }
     let hash = config.auth.password_hash.clone();
-    let valid = tokio::task::spawn_blocking(move || password::verify_password(&req.password, &hash))
-        .await.map_err(|error| ApiError::Internal(error.into()))??;
+    let valid =
+        tokio::task::spawn_blocking(move || password::verify_password(&req.password, &hash))
+            .await
+            .map_err(|error| ApiError::Internal(error.into()))??;
 
     if !valid {
         return Err(ApiError::Unauthorized);
     }
 
-    let token = jwt::generate_token(&config.auth.jwt_secret)
-        .map_err(|e| ApiError::Internal(e.into()))?;
+    let token = jwt::generate_token(&config.auth.jwt_secret).map_err(ApiError::Internal)?;
 
     Ok(Json(LoginResponse { token }))
 }
@@ -71,16 +72,22 @@ pub async fn setup(
     }
 
     if req.password.is_empty() || req.password.len() > 72 {
-        return Err(ApiError::BadRequest("password must contain between 1 and 72 UTF-8 bytes".into()));
+        return Err(ApiError::BadRequest(
+            "password must contain between 1 and 72 UTF-8 bytes".into(),
+        ));
     }
 
     let hash = tokio::task::spawn_blocking(move || password::hash_password(&req.password))
-        .await.map_err(|error| ApiError::Internal(error.into()))??;
+        .await
+        .map_err(|error| ApiError::Internal(error.into()))??;
 
     let mut new_config = config;
     new_config.auth.password_hash = hash;
-    state.config.set(new_config).await
-        .map_err(|e| ApiError::Internal(e.into()))?;
+    state
+        .config
+        .set(new_config)
+        .await
+        .map_err(ApiError::Internal)?;
 
     Ok(Json(serde_json::json!({"status": "ok"})))
 }
@@ -119,7 +126,13 @@ pub(crate) mod tests {
     async fn unconfigured_password_cannot_issue_tokens() {
         let fixture = TestStore::new();
         ensure_jwt_secret(&fixture.store).await.unwrap();
-        let result = login(State(state(fixture.store.clone())), Json(LoginRequest { password: String::new() })).await;
+        let result = login(
+            State(state(fixture.store.clone())),
+            Json(LoginRequest {
+                password: String::new(),
+            }),
+        )
+        .await;
         assert!(matches!(result, Err(ApiError::Unauthorized)));
     }
 
@@ -129,10 +142,23 @@ pub(crate) mod tests {
         ensure_jwt_secret(&fixture.store).await.unwrap();
         let application = state(fixture.store.clone());
         let (first, second) = tokio::join!(
-            setup(State(application.clone()), Json(SetupRequest { password: "first".into() })),
-            setup(State(application), Json(SetupRequest { password: "second".into() })),
+            setup(
+                State(application.clone()),
+                Json(SetupRequest {
+                    password: "first".into()
+                })
+            ),
+            setup(
+                State(application),
+                Json(SetupRequest {
+                    password: "second".into()
+                })
+            ),
         );
         assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
-        assert!(matches!(first, Err(ApiError::Conflict(_))) || matches!(second, Err(ApiError::Conflict(_))));
+        assert!(
+            matches!(first, Err(ApiError::Conflict(_)))
+                || matches!(second, Err(ApiError::Conflict(_)))
+        );
     }
 }

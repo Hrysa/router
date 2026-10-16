@@ -2,7 +2,7 @@
 
 ## System Overview
 
-routerd is a Linux router daemon that manages network services through a unified YAML configuration. It uses **systemd-networkd** for interface management. Router-managed service files are generated from `config.yml`; sing-box's JSONC file is managed separately by the user.
+routerd is a Linux router daemon that manages network services through a unified YAML configuration. It uses **systemd-networkd** for interface management. Router-managed service files are generated from `config.yml`; sing-box JSONC is stored verbatim in `singbox.config` and deployed on explicit full Apply or `--install-singbox` setup.
 
 ```
 ┌─────────────┐        ┌────────────────────────────────────────┐
@@ -73,7 +73,7 @@ External systems and data sources that routerd manages.
 | DHCP | `kea-dhcp4-server` | `/etc/kea/kea-dhcp4.conf` | Any `dhcp.pools[].enabled` |
 | VPN | `wg-quick@wg0` | `/etc/wireguard/wg0.conf` | `vpn.wireguard.enabled` |
 | PPPoE | `pppd` | `/etc/ppp/peers/isp`, `/etc/ppp/chap-secrets` | WAN `interfaces.items[].method: pppoe` with nonempty username |
-| Proxy | `sing-box` | `/etc/sing-box/config.jsonc` (user-managed) | Start/restart attempted on every apply |
+| Proxy | `sing-box` | `/etc/sing-box/config.jsonc` from `singbox.config` | Full Apply only, when `singbox` exists: start if inactive; restart on change or first/forced Apply |
 
 Disabled DHCP/PPP/WireGuard services are stopped if active, not started from stale on-disk configuration. `vnstat` has manual API service controls, but `monitoring.vnstat` is not wired into the apply pipeline.
 
@@ -130,7 +130,7 @@ Transform abstract config into concrete service files:
 | `hooks.rs` | User-defined lifecycle hooks |
 | `rollback.rs` | Explicit restore of a saved backup, followed by forced apply |
 | `files.rs` | Exclusive random staging files/directories, atomic replacement, permissions |
-| `singbox.rs` | Download/install sing-box binary |
+| `singbox.rs` | Config/unit installation and systemd daemon reload; staged JSONC validation and private atomic deployment |
 
 ### Auth (`src/auth/`)
 
@@ -160,37 +160,45 @@ User-facing interfaces and monitoring.
 
 ### Monitoring
 
-`src/metrics/mod.rs` samples interface and firewall counters every five seconds and retains up to 360 samples (30 minutes). `/api/metrics` supplies aligned series for the uPlot charts; `/api/metrics/current` returns the latest sample.
+`src/metrics/mod.rs` samples interface and firewall counters every two seconds and retains up to 900 samples (30 minutes). The Overview and Monitoring pages refresh metrics and live interface counters every two seconds; Overview refreshes CPU and memory statistics at the same cadence. `/api/status/system` returns cumulative CPU counters: idle includes I/O wait, and total excludes the guest fields already included in user/nice time. Overview computes CPU utilization from successive counter deltas, normalized across all cores; it waits for two valid samples and clears the percentage for failed requests, missing/unchanged counters, or counter resets. `/api/metrics` supplies aligned series for the uPlot charts; `/api/metrics/current` returns the latest sample.
 
-System/interface details and Kea CSV lease reads live in `src/api/handlers/monitor.rs` and `src/api/handlers/status.rs`. `/api/monitor/traffic` and `/api/monitor/connections` are placeholders. The files in `src/monitor/` are currently module stubs, not separate collectors.
+System/interface details and Kea CSV lease reads live in `src/api/handlers/monitor.rs` and `src/api/handlers/status.rs`. `/api/monitor/traffic` and `/api/monitor/connections` remain placeholders. The empty, unused `src/monitor/` module tree has been removed; live collection stays in the metrics module and API handlers.
 
 ### CLI (`src/main.rs`)
 
-Entry point with clap argument parsing. Orchestrates startup: parse args → init if needed → load config → apply unless `--init` → start API server. With `--init`, offload changes and startup hooks are also skipped.
+`--install-singbox` exits through a separate config/unit setup path before store initialization or daemon startup. It reads `<config-dir>/config.yml`, requires nonempty `singbox.config`, and unconditionally atomically replaces `/etc/sing-box/config.jsonc` at `0600` and `/etc/systemd/system/sing-box.service` at `0644`. Only after both writes succeed does it run `systemctl daemon-reload`, with a 30-second timeout and cancellation-safe child cleanup. Execution failures, nonzero exits, and timeouts propagate with a warning in the error that files are already installed. Source/write failures skip reload, and the two replacements are not a transaction. It neither downloads nor executes/replaces the sing-box binary, creates backups/authentication state, starts the API, nor changes networking. The unit expects an independently installed `/usr/local/bin/sing-box`; enable/start/restart remains an administrator operation. JSONC external validation remains on editor Save/full Apply, not this installer. Install mode conflicts with `--init` and `--boot`. Regression tests inject a fake systemctl executable and temporary source/destination paths, never a live systemd reload.
+
+Entry point with clap argument parsing. Orchestrates startup: parse args → init if needed → load and validate config → selected startup mode → start API server. Normal startup reconciles other saved service/network configuration, NIC offloads, and hooks, but skips nftables checks/install and all sing-box reads/status/control. `--init` skips all startup host changes. `--boot` checks and installs only nftables from the existing saved config, then starts the API; it conflicts with `--init` and `--install-singbox`. Boot mode does not write generated service files, reconcile other services, apply sysctl, restore TPROXY/WAN policy routes or shaping, change offloads, or run hooks. These non-firewall dependencies must be provisioned separately. All modes leave sing-box startup to systemd; explicit API Apply and restore retain full reconciliation.
 
 ---
 
 ## Apply Pipeline
 
 ```
-normal startup / POST /api/config/apply / explicit backup restore
+POST /api/config/apply / explicit backup restore (full Apply)
     → validate schema
     → render all service configs
     → stage syntax checks: nft -j -c -f required; kea-dhcp4 -t if installed
     → detect rendered content differences against disk and last successful in-memory config
+    → compare nftables JSON and saved sing-box JSONC against last successful service-content snapshot
+    → compare saved sing-box JSONC with its deployed file when configured
     → write changed configs (exclusive random staging file + rename)
     → start enabled services if inactive; reload/restart changed services
-        - nftables: nft -j -f <staged JSON> (not systemctl, no file persisted)
+        - nftables: nft -j -f <staged JSON> only when changed or first/forced apply
         - systemd-networkd: networkctl reload (fallback: systemctl restart)
         - others: systemctl restart
     → reconcile IPv4 TPROXY policy routing
 ```
 
+Normal startup shares the full pipeline's other service/network steps, but skips the external nftables syntax check, nftables installation, and all sing-box reconciliation. Firewall-only `--boot` uses a separate schema validation → nftables render → required `nft -j -c -f` → `nft -j -f` path, without the rest of the pipeline. Neither partial startup path publishes a full-Apply service-content snapshot.
+
 API mutations, service controls, apply, and restore share an operation lock. Read-modify-write requests cannot overwrite one another, and service applies cannot overlap. Individual config saves also hold the store's write lock through disk replacement and in-memory publication. Backups use unique timestamp/UUID IDs, and restore rejects IDs containing path separators.
 
-Only nftables and optional Kea checks invoke external syntax validators before apply. PPP, WireGuard, networkd, and sysctl rely on `src/config/validator.rs`. Service command failures, sysctl failures, and TPROXY setup failures propagate instead of reporting a successful apply. A missing/unconfigured sing-box remains an optional warning; if its config file exists, start/restart failures propagate.
+External syntax validators are required nftables, optional-when-absent Kea, and optional-when-absent `sing-box check -c <staged JSONC>` for configured sing-box on full Apply. PPP, WireGuard, networkd, and sysctl rely on `src/config/validator.rs`. Service command failures, sysctl failures, and TPROXY setup failures propagate instead of reporting a successful apply. An absent `singbox` section means its deployed file and service are left unmanaged; configured sing-box validation/write/start/restart failures propagate.
 
-There is no automatic transactional rollback after failure: earlier file writes and service changes may persist. The in-memory last-successful snapshot is not a durable applied-state journal; it is initialized from the saved configuration at process startup. Keep console access and review configuration before applying network changes.
+There is no automatic transactional rollback after failure: earlier file writes and service changes may persist. The in-memory last-successful configuration snapshot is not a durable applied-state journal; it is initialized from the saved configuration at process startup. Separate service-content snapshots for nftables JSON and saved sing-box JSONC start unknown, so the first explicit full Apply always reconciles nftables and configured sing-box, regardless of startup mode. They are invalidated when an apply attempt begins and published only after all full-Apply steps succeed; failed or cancelled attempts therefore cannot skip reconciliation on retry, including after a config revert. Forced backup restore bypasses these content comparisons. Unchanged running sing-box is left alone; configured inactive sing-box is started. Missing/drifted JSONC is replaced from saved configuration, and read errors other than absence propagate. nftables syntax checking still runs on full Apply even when its rules are unchanged; no live kernel-ruleset comparison is performed, so external modifications to owned tables require `--boot` or forced restore to reinstall unchanged rules. Normal startup never restores those tables. Keep console access and review configuration before applying network changes.
+
+The sing-box API preserves raw JSONC in `singbox.config`: GET returns the saved text, and PUT validates an isolated `0600` staging file when the binary exists, then saves only routerd configuration under the operation lock. Save creates normal config backups; restore includes this text. Full Apply stages validation again, then atomically deploys the exact text at `0600` before service reconciliation. Empty text is rejected. Existing deployed JSONC is not automatically imported: paste it into the WebUI and Save to migrate. An absent section, including an older backup, leaves existing external files/services untouched. Startup modes never read or write the deployed sing-box file, validate it externally, or control its service.
 
 ### nftables Layout
 
@@ -207,7 +215,7 @@ Address conventions: `@setname` references a named set (protocol picked from the
 
 Every rule's comment is `[<id>] <comment>` — `/api/firewall/stats` parses the ID out of `nft -j list chain` output to attach per-rule counters.
 
-Do not share these four tables with other tools: their contents are replaced on every apply. TPROXY marks select dedicated routing tables; reserved IDs 0, 253, 254, and 255 are rejected. Cleanup removes the matching local route/rule, not the entire routing table.
+Do not share these four tables with other tools: their contents are replaced whenever nftables changes are applied. TPROXY marks select dedicated routing tables; reserved IDs 0, 253, 254, and 255 are rejected. Cleanup removes the matching local route/rule, not the entire routing table.
 
 ### System route management
 
@@ -373,7 +381,7 @@ routerd --init -c /etc/router
     └── start web UI/API for review and explicit apply
 ```
 
-Initialization leaves network managers, service configs, addresses, routes, and firewall rules untouched. This also holds for repeated starts with `--init`. Starting without `--init` uses the normal apply pipeline above. The generated configuration is a router draft, not a complete import of the existing network setup.
+Initialization leaves network managers, service configs, addresses, routes, and firewall rules untouched. This also holds for repeated starts with `--init`. Starting without `--init` or `--boot` uses the partial normal-startup pipeline above; `--boot` instead restores only nftables. The generated configuration is a router draft, not a complete import of the existing network setup.
 
 ## Repository Layout
 
@@ -388,7 +396,7 @@ router/
 │   ├── renderer/           # nftables, kea, interfaces, ppp, wireguard, sysctl
 │   ├── service/            # apply pipeline, manager, rollback, hooks, singbox installer
 │   ├── api/                # axum server, handlers, auth middleware
-│   ├── monitor/            # system/interface/traffic/lease/connection monitoring
+│   ├── metrics/            # interface/firewall collection and rolling history
 │   └── auth/               # JWT + password hashing
 └── web/                    # React SPA; dist/ embedded in binary
 ```
@@ -415,7 +423,9 @@ The frontend reimplements the Yacd-meta React shell, responsive sidebar, card-ba
 
 `web/src/App.tsx` provides hash navigation, authentication gating, live Apply confirmation, and theme preferences. Remote data uses React Query and an abortable same-origin fetch client; logout, token changes, and HTTP 401 clear cached configuration and unmount sensitive editors. Editor drafts remain independent of background queries. Password limits use UTF-8 byte counts, and raw sing-box JSONC is never reformatted by the frontend.
 
-The overview and monitoring pages graph a selected interface rather than summing overlapping bridge/physical counters. `rx_bps` and `tx_bps` from the API are bytes/s. Configuration editors save without applying; startup hooks activate on normal startup. Service controls and backup restores are explicitly confirmed live operations. The pending-saves indicator only records this browser's actions, not authoritative configuration drift.
+The overview and monitoring pages graph a selected interface rather than summing overlapping bridge/physical counters. `rx_bps` and `tx_bps` from the API are bytes/s. Configuration editors save without applying; startup hooks activate on normal startup. Service controls and backup restores are explicitly confirmed live operations.
+
+`GET /api/config/apply/status` takes the configuration operation lock and compares saved typed configuration, including `singbox.config`, with the last-successful configuration snapshot. Without a successful service snapshot, including first Apply under any startup mode or after a failed/cancelled attempt, it returns `pending: true`. The endpoint only reads in-memory state; it does not read deployed files, render, run syntax checks, control services, or inspect live networking. Same-content saves and saved reversions return `pending: false`. External generated-file or kernel drift and service inactivity are not tracked by this endpoint. The authenticated UI polls every five seconds and invalidates status after successful or failed writes, so other clients' saved changes are detected too. Apply is unavailable for unchanged, loading, refreshing, or failed status checks; explicit API Apply and service controls remain available. Browser-local pending flags are no longer used.
 
 Frontend regression tests live in `web/tests/` and use Bun's built-in runner. Build assets with Bun before compiling Rust; `web/dist/` is generated and ignored. See `web/README.md` for commands and `web/THIRD_PARTY_NOTICES.md` for reference attribution.
 

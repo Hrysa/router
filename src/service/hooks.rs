@@ -22,11 +22,7 @@ pub async fn run_hooks(stage: &str, commands: &str) -> Result<()> {
     for cmd in &lines {
         tracing::info!(cmd = *cmd, stage = stage, "executing hook");
 
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
-            .output()
-            .await?;
+        let output = Command::new("sh").arg("-c").arg(cmd).output().await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

@@ -113,13 +113,42 @@ export interface Hooks {
   after_start: string;
 }
 export interface ShaperProfile {
-  id: number; comment: string; interface: string; enabled: boolean; side: 'wan' | 'lan';
-  upload_kbit: number; download_kbit: number; nat: boolean; overhead: number; mpu: number; link_layer: 'none' | 'atm' | 'ptm';
+  id: number;
+  comment: string;
+  interface: string;
+  enabled: boolean;
+  side: 'wan' | 'lan';
+  upload_kbit: number;
+  download_kbit: number;
+  nat: boolean;
+  overhead: number;
+  mpu: number;
+  link_layer: 'none' | 'atm' | 'ptm';
 }
-export interface ShaperSettings { profiles: ShaperProfile[] }
-export interface ShaperStats { bytes: number; packets: number; drops: number; backlog_bytes: number; ecn_marks: number; average_delay_us: number }
-export interface ShaperStatus { timestamp_ms: number; error?: string; reconnect_active: boolean; profiles: { id: number; interface: string; egress?: ShaperStats; ingress?: ShaperStats }[] }
+export interface ShaperSettings {
+  profiles: ShaperProfile[];
+}
+export interface ShaperStats {
+  bytes: number;
+  packets: number;
+  drops: number;
+  backlog_bytes: number;
+  ecn_marks: number;
+  average_delay_us: number;
+}
+export interface ShaperStatus {
+  timestamp_ms: number;
+  error?: string;
+  reconnect_active: boolean;
+  profiles: {
+    id: number;
+    interface: string;
+    egress?: ShaperStats;
+    ingress?: ShaperStats;
+  }[];
+}
 export interface Config {
+  singbox?: { config: string };
   shaper?: ShaperSettings;
   routing: { routes: StaticRoute[] };
   interfaces: { items: InterfaceConfig[] };
@@ -139,8 +168,15 @@ export interface StaticRoute {
   on_link: boolean;
   enabled: boolean;
 }
-export interface WanTable { name: string; interface: string; table: number }
-export interface RoutingSettings { routes?: StaticRoute[]; wan_tables: WanTable[] }
+export interface WanTable {
+  name: string;
+  interface: string;
+  table: number;
+}
+export interface RoutingSettings {
+  routes?: StaticRoute[];
+  wan_tables: WanTable[];
+}
 export interface KernelRoute {
   family: string;
   dst?: string;
@@ -176,7 +212,7 @@ export interface SystemStats {
     available_kb: number;
     usage_percent: number;
   };
-  cpu: { idle: number; total: number };
+  cpu: { idle?: number; total?: number };
 }
 export interface Metrics {
   timestamps: number[];

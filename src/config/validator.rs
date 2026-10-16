@@ -26,6 +26,19 @@ pub fn validate(config: &Config) -> Vec<ValidationError> {
     validate_dhcp(config, &mut errors);
     validate_firewall(config, &mut errors);
 
+    if config
+        .singbox
+        .as_ref()
+        .is_some_and(|singbox| singbox.config.trim().is_empty())
+    {
+        errors.push(ValidationError {
+            field: "singbox.config".into(),
+            message:
+                "sing-box JSONC configuration must not be empty; omit singbox to leave it unmanaged"
+                    .into(),
+        });
+    }
+
     if let Some(vpn) = &config.vpn {
         if let Some(wg) = &vpn.wireguard {
             if wg.enabled {
@@ -42,25 +55,49 @@ pub fn validate(config: &Config) -> Vec<ValidationError> {
                     });
                 }
                 if !is_valid_cidr(&wg.address) {
-                    errors.push(ValidationError { field: "vpn.wireguard.address".into(), message: "invalid WireGuard address".into() });
+                    errors.push(ValidationError {
+                        field: "vpn.wireguard.address".into(),
+                        message: "invalid WireGuard address".into(),
+                    });
                 }
                 if !is_valid_wireguard_key(&wg.private_key) {
-                    errors.push(ValidationError { field: "vpn.wireguard.private_key".into(), message: "invalid WireGuard private key".into() });
+                    errors.push(ValidationError {
+                        field: "vpn.wireguard.private_key".into(),
+                        message: "invalid WireGuard private key".into(),
+                    });
                 }
                 if wg.listen_port == 0 {
-                    errors.push(ValidationError { field: "vpn.wireguard.listen_port".into(), message: "port must be non-zero".into() });
+                    errors.push(ValidationError {
+                        field: "vpn.wireguard.listen_port".into(),
+                        message: "port must be non-zero".into(),
+                    });
                 }
                 for (index, peer) in wg.peers.iter().enumerate().filter(|(_, peer)| peer.enabled) {
                     let prefix = format!("vpn.wireguard.peers[{}]", index);
                     validate_single_line(&format!("{}.name", prefix), &peer.name, &mut errors);
                     if !is_valid_wireguard_key(&peer.public_key) {
-                        errors.push(ValidationError { field: format!("{}.public_key", prefix), message: "invalid WireGuard public key".into() });
+                        errors.push(ValidationError {
+                            field: format!("{}.public_key", prefix),
+                            message: "invalid WireGuard public key".into(),
+                        });
                     }
-                    if peer.allowed_ips.is_empty() || peer.allowed_ips.iter().any(|address| !is_valid_cidr(address)) {
-                        errors.push(ValidationError { field: format!("{}.allowed_ips", prefix), message: "at least one valid allowed IP is required".into() });
+                    if peer.allowed_ips.is_empty()
+                        || peer
+                            .allowed_ips
+                            .iter()
+                            .any(|address| !is_valid_cidr(address))
+                    {
+                        errors.push(ValidationError {
+                            field: format!("{}.allowed_ips", prefix),
+                            message: "at least one valid allowed IP is required".into(),
+                        });
                     }
                     if let Some(endpoint) = &peer.endpoint {
-                        validate_single_line(&format!("{}.endpoint", prefix), endpoint, &mut errors);
+                        validate_single_line(
+                            &format!("{}.endpoint", prefix),
+                            endpoint,
+                            &mut errors,
+                        );
                     }
                 }
             }
@@ -77,7 +114,10 @@ fn validate_interfaces(config: &Config, errors: &mut Vec<ValidationError>) {
 
         for (field, value) in [("mtu", iface.mtu), ("mss_clamp_mtu", iface.mss_clamp_mtu)] {
             if value.is_some_and(|value| !(1280..=9216).contains(&value)) {
-                errors.push(ValidationError { field: format!("{}.{}", prefix, field), message: "must be between 1280 and 9216 bytes".into() });
+                errors.push(ValidationError {
+                    field: format!("{}.{}", prefix, field),
+                    message: "must be between 1280 and 9216 bytes".into(),
+                });
             }
         }
 
@@ -89,21 +129,33 @@ fn validate_interfaces(config: &Config, errors: &mut Vec<ValidationError>) {
             });
         }
         if !names.insert(&iface.name) {
-            errors.push(ValidationError { field: format!("{}.name", prefix), message: "duplicate interface name".into() });
+            errors.push(ValidationError {
+                field: format!("{}.name", prefix),
+                message: "duplicate interface name".into(),
+            });
         }
         for port in &iface.bridge_ports {
             if !is_valid_interface_name(port) || port == &iface.name {
-                errors.push(ValidationError { field: format!("{}.bridge_ports", prefix), message: "invalid bridge port".into() });
+                errors.push(ValidationError {
+                    field: format!("{}.bridge_ports", prefix),
+                    message: "invalid bridge port".into(),
+                });
             }
         }
         if let Some(parent) = &iface.parent {
             if !is_valid_interface_name(parent) || parent == &iface.name {
-                errors.push(ValidationError { field: format!("{}.parent", prefix), message: "invalid parent interface".into() });
+                errors.push(ValidationError {
+                    field: format!("{}.parent", prefix),
+                    message: "invalid parent interface".into(),
+                });
             }
         }
         if let Some(vlan_id) = iface.vlan_id {
             if vlan_id == 0 || vlan_id > 4094 || iface.parent.is_none() {
-                errors.push(ValidationError { field: format!("{}.vlan_id", prefix), message: "VLAN requires an ID from 1 to 4094 and a parent".into() });
+                errors.push(ValidationError {
+                    field: format!("{}.vlan_id", prefix),
+                    message: "VLAN requires an ID from 1 to 4094 and a parent".into(),
+                });
             }
         }
         if let Some(dhcp) = &iface.dhcp {
@@ -115,8 +167,16 @@ fn validate_interfaces(config: &Config, errors: &mut Vec<ValidationError>) {
         match iface.method {
             super::schema::InterfaceMethod::Pppoe => {
                 if let Some(pppoe) = &iface.pppoe {
-                    validate_single_line(&format!("{}.pppoe.username", prefix), &pppoe.username, errors);
-                    validate_single_line(&format!("{}.pppoe.password", prefix), &pppoe.password, errors);
+                    validate_single_line(
+                        &format!("{}.pppoe.username", prefix),
+                        &pppoe.username,
+                        errors,
+                    );
+                    validate_single_line(
+                        &format!("{}.pppoe.password", prefix),
+                        &pppoe.password,
+                        errors,
+                    );
                     if !pppoe.username.is_empty() {
                         if pppoe.password.is_empty() {
                             errors.push(ValidationError {
@@ -137,7 +197,10 @@ fn validate_interfaces(config: &Config, errors: &mut Vec<ValidationError>) {
                 if let Some(static_cfg) = &iface.static_config {
                     for dns in &static_cfg.dns {
                         if !is_valid_ip(dns) {
-                            errors.push(ValidationError { field: format!("{}.static_config.dns", prefix), message: "DNS server must be an IP address".into() });
+                            errors.push(ValidationError {
+                                field: format!("{}.static_config.dns", prefix),
+                                message: "DNS server must be an IP address".into(),
+                            });
                         }
                     }
                     if !is_valid_cidr(&static_cfg.address) {
@@ -159,7 +222,6 @@ fn validate_interfaces(config: &Config, errors: &mut Vec<ValidationError>) {
                         message: "static config required when method is static".into(),
                     });
                 }
-
             }
             super::schema::InterfaceMethod::Dhcp => {}
         }
@@ -186,7 +248,10 @@ fn validate_dhcp(config: &Config, errors: &mut Vec<ValidationError>) {
         } else if !is_valid_cidr(&pool.subnet) {
             errors.push(ValidationError {
                 field: format!("dhcp.pools[{}].subnet", i),
-                message: format!("invalid CIDR: {}, expected format like 192.168.1.0/24", pool.subnet),
+                message: format!(
+                    "invalid CIDR: {}, expected format like 192.168.1.0/24",
+                    pool.subnet
+                ),
             });
         }
         if !is_valid_ip(&pool.range.start) {
@@ -317,7 +382,10 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
         if pf.proto != "tcp" && pf.proto != "udp" && pf.proto != "tcp+udp" {
             errors.push(ValidationError {
                 field: format!("firewall.nat.port_forward[{}].proto", i),
-                message: format!("invalid protocol: '{}', must be tcp, udp, or tcp+udp", pf.proto),
+                message: format!(
+                    "invalid protocol: '{}', must be tcp, udp, or tcp+udp",
+                    pf.proto
+                ),
             });
         }
     }
@@ -332,7 +400,10 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
     let mut rule_ids = std::collections::HashSet::new();
     for rule in all_rules {
         if !rule_ids.insert(rule.id) {
-            errors.push(ValidationError { field: "firewall.rules".into(), message: format!("duplicate rule ID: {}", rule.id) });
+            errors.push(ValidationError {
+                field: "firewall.rules".into(),
+                message: format!("duplicate rule ID: {}", rule.id),
+            });
         }
         if rule.interfaces.is_empty() {
             errors.push(ValidationError {
@@ -341,13 +412,13 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
             });
         }
         // Protocol is required when dport or sport is specified
-        if rule.dport.is_some() || rule.sport.is_some() {
-            if rule.proto.is_none() || rule.proto.as_ref().unwrap().is_empty() {
-                errors.push(ValidationError {
-                    field: format!("firewall.rules.*.{}.proto", rule.comment),
-                    message: "protocol is required when dport or sport is specified".into(),
-                });
-            }
+        if (rule.dport.is_some() || rule.sport.is_some())
+            && rule.proto.as_ref().is_none_or(Vec::is_empty)
+        {
+            errors.push(ValidationError {
+                field: format!("firewall.rules.*.{}.proto", rule.comment),
+                message: "protocol is required when dport or sport is specified".into(),
+            });
         }
         if rule.action == crate::config::schema::Action::Tproxy {
             if rule.tproxy_port.is_none() || rule.tproxy_port == Some(0) {
@@ -359,7 +430,9 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
             if rule.mark.is_none() || matches!(rule.mark, Some(0 | 253 | 254 | 255)) {
                 errors.push(ValidationError {
                     field: format!("firewall.rules.*.{}.mark", rule.comment),
-                    message: "mark is required and cannot use reserved routing tables 0, 253, 254 or 255".into(),
+                    message:
+                        "mark is required and cannot use reserved routing tables 0, 253, 254 or 255"
+                            .into(),
                 });
             }
         }
@@ -380,30 +453,51 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
 
 fn validate_outbound_routes(config: &Config, errors: &mut Vec<ValidationError>) {
     use super::schema::Action;
-    for (chain, rules) in [("input", &config.firewall.rules.input), ("forward", &config.firewall.rules.forward)] {
+    for (chain, rules) in [
+        ("input", &config.firewall.rules.input),
+        ("forward", &config.firewall.rules.forward),
+    ] {
         for (index, rule) in rules.iter().enumerate() {
-            if !rule.preserve_internal_routes && (chain != "forward" || rule.action != Action::Accept || rule.route_via.is_none()) {
+            if !rule.preserve_internal_routes
+                && (chain != "forward" || rule.action != Action::Accept || rule.route_via.is_none())
+            {
                 errors.push(ValidationError {
                     field: format!("firewall.rules.{}[{}].preserve_internal_routes", chain, index),
                     message: "disabling internal-route preservation requires a forward Accept rule with route_via".into(),
                 });
             }
-            let Some(target) = &rule.route_via else { continue };
+            let Some(target) = &rule.route_via else {
+                continue;
+            };
             let problem = if chain != "forward" || rule.action != Action::Accept {
                 Some("route_via is only supported on forward Accept rules")
             } else if !config.interfaces.items.iter().any(|interface| {
-                interface.name == *target && interface.is_wan() && interface.return_routing != Some(false)
+                interface.name == *target
+                    && interface.is_wan()
+                    && interface.return_routing != Some(false)
             }) {
                 Some("route_via must name a configured WAN with return routing enabled")
             } else if rule.oif.is_some() {
                 Some("route_via cannot be combined with an egress interface match")
             } else if rule.rate.is_some() {
                 Some("route_via cannot be combined with a rate limit")
-            } else if rule.state.as_ref().is_some_and(|states| !states.is_empty() && !states.iter().any(|state| state == "new")) {
+            } else if rule.state.as_ref().is_some_and(|states| {
+                !states.is_empty() && !states.iter().any(|state| state == "new")
+            }) {
                 Some("route_via connection states must include new, or be empty")
-            } else if rule.proto.as_ref().is_some_and(|protocols| protocols.iter().any(|protocol| !matches!(protocol.as_str(), "ip" | "tcp" | "udp" | "icmp"))) {
+            } else if rule.proto.as_ref().is_some_and(|protocols| {
+                protocols
+                    .iter()
+                    .any(|protocol| !matches!(protocol.as_str(), "ip" | "tcp" | "udp" | "icmp"))
+            }) {
                 Some("route_via supports IPv4 protocols ip, tcp, udp and icmp only")
-            } else if (rule.sport.is_some() || rule.dport.is_some()) && rule.proto.as_ref().is_some_and(|protocols| protocols.iter().any(|protocol| !matches!(protocol.as_str(), "tcp" | "udp"))) {
+            } else if (rule.sport.is_some() || rule.dport.is_some())
+                && rule.proto.as_ref().is_some_and(|protocols| {
+                    protocols
+                        .iter()
+                        .any(|protocol| !matches!(protocol.as_str(), "tcp" | "udp"))
+                })
+            {
                 Some("route_via port matches require tcp or udp")
             } else {
                 None
@@ -419,9 +513,17 @@ fn validate_outbound_routes(config: &Config, errors: &mut Vec<ValidationError>) 
                 let valid = if address == "@local" {
                     true
                 } else if let Some(name) = address.strip_prefix('@') {
-                    config.firewall.sets.iter().any(|set| set.name == name && set.set_type == "ipv4_addr")
+                    config
+                        .firewall
+                        .sets
+                        .iter()
+                        .any(|set| set.name == name && set.set_type == "ipv4_addr")
                 } else {
-                    is_valid_cidr(address) && address.split('/').next().is_some_and(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+                    is_valid_cidr(address)
+                        && address
+                            .split('/')
+                            .next()
+                            .is_some_and(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
                 };
                 if !valid {
                     errors.push(ValidationError {
@@ -432,10 +534,14 @@ fn validate_outbound_routes(config: &Config, errors: &mut Vec<ValidationError>) 
             }
             for (field, port) in [("sport", &rule.sport), ("dport", &rule.dport)] {
                 if let Some(super::schema::PortSpec::Set(name)) = port {
-                    if !config.firewall.sets.iter().any(|set| set.name == name.trim_start_matches('@') && set.set_type == "inet_service") {
+                    if !config.firewall.sets.iter().any(|set| {
+                        set.name == name.trim_start_matches('@') && set.set_type == "inet_service"
+                    }) {
                         errors.push(ValidationError {
                             field: format!("firewall.rules.{}[{}].{}", chain, index, field),
-                            message: "WAN selection port sets must name a configured inet_service set".into(),
+                            message:
+                                "WAN selection port sets must name a configured inet_service set"
+                                    .into(),
                         });
                     }
                 }
@@ -446,18 +552,29 @@ fn validate_outbound_routes(config: &Config, errors: &mut Vec<ValidationError>) 
 
 fn validate_single_line(field: &str, value: &str, errors: &mut Vec<ValidationError>) {
     if value.chars().any(char::is_control) {
-        errors.push(ValidationError { field: field.into(), message: "control characters are not allowed".into() });
+        errors.push(ValidationError {
+            field: field.into(),
+            message: "control characters are not allowed".into(),
+        });
     }
 }
 
 fn is_valid_interface_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 15 && name != "." && name != ".."
-        && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    !name.is_empty()
+        && name.len() <= 15
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn is_valid_wireguard_key(key: &str) -> bool {
-    key.len() == 44 && key.ends_with('=')
-        && key[..43].bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'))
+    key.len() == 44
+        && key.ends_with('=')
+        && key[..43]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'))
 }
 
 fn is_valid_ip(s: &str) -> bool {
@@ -484,9 +601,7 @@ fn is_valid_cidr(s: &str) -> bool {
 
 fn mac_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$").unwrap()
-    })
+    RE.get_or_init(|| Regex::new(r"^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$").unwrap())
 }
 
 fn is_valid_mac(s: &str) -> bool {
@@ -500,7 +615,10 @@ mod tests {
     #[test]
     fn common_mtu_limits_are_validated_independently_of_interface_role() {
         let mut config = Config::default();
-        config.interfaces.items = vec![InterfaceConfig { name: "lan0".into(), ..Default::default() }];
+        config.interfaces.items = vec![InterfaceConfig {
+            name: "lan0".into(),
+            ..Default::default()
+        }];
         for value in [0, 1279, 9217] {
             config.interfaces.items[0].mtu = Some(value);
             config.interfaces.items[0].mss_clamp_mtu = Some(value);
@@ -510,8 +628,11 @@ mod tests {
         }
         config.interfaces.items[0].mtu = Some(1492);
         config.interfaces.items[0].mss_clamp_mtu = Some(1492);
-        assert!(!validate(&config).iter().any(|e| e.field.ends_with(".mtu") || e.field.ends_with(".mss_clamp_mtu")));
-        let old: InterfaceConfig = serde_json::from_value(serde_json::json!({"name":"lan0"})).unwrap();
+        assert!(!validate(&config)
+            .iter()
+            .any(|e| e.field.ends_with(".mtu") || e.field.ends_with(".mss_clamp_mtu")));
+        let old: InterfaceConfig =
+            serde_json::from_value(serde_json::json!({"name":"lan0"})).unwrap();
         assert_eq!((old.mtu, old.mss_clamp_mtu), (None, None));
     }
 
@@ -521,7 +642,9 @@ mod tests {
         config.firewall.rules.forward[0].preserve_internal_routes = false;
         assert!(super::validate(&config).is_empty());
         config.firewall.rules.forward[0].route_via = None;
-        assert!(super::validate(&config).iter().any(|error| error.field.ends_with("preserve_internal_routes")));
+        assert!(super::validate(&config)
+            .iter()
+            .any(|error| error.field.ends_with("preserve_internal_routes")));
     }
     #[test]
     fn outbound_wan_selection_validates_targets_and_prerouting_matches() {
@@ -547,15 +670,30 @@ mod tests {
             let mut rule = base.clone();
             rule[field] = value;
             changed.firewall.rules.forward[0] = serde_json::from_value(rule).unwrap();
-            assert!(!super::validate(&changed).is_empty(), "accepted invalid {field}");
+            assert!(
+                !super::validate(&changed).is_empty(),
+                "accepted invalid {field}"
+            );
         }
         let mut disabled = config.clone();
         disabled.interfaces.items[0].return_routing = Some(false);
-        assert!(super::validate(&disabled).iter().any(|error| error.field.ends_with("route_via")));
+        assert!(super::validate(&disabled)
+            .iter()
+            .any(|error| error.field.ends_with("route_via")));
         let mut input = config.clone();
-        input.firewall.rules.input.push(input.firewall.rules.forward.remove(0));
-        assert!(super::validate(&input).iter().any(|error| error.field.starts_with("firewall.rules.input") && error.field.ends_with("route_via")));
-        for method in [super::super::schema::InterfaceMethod::Dhcp, super::super::schema::InterfaceMethod::Pppoe] {
+        input
+            .firewall
+            .rules
+            .input
+            .push(input.firewall.rules.forward.remove(0));
+        assert!(super::validate(&input)
+            .iter()
+            .any(|error| error.field.starts_with("firewall.rules.input")
+                && error.field.ends_with("route_via")));
+        for method in [
+            super::super::schema::InterfaceMethod::Dhcp,
+            super::super::schema::InterfaceMethod::Pppoe,
+        ] {
             let mut dynamic = config.clone();
             dynamic.interfaces.items[0].method = method;
             assert!(super::validate(&dynamic).is_empty());
@@ -655,7 +793,9 @@ mod tests {
         let mut config = default_config();
         config.firewall.default_policy.output = "accep".into();
         let errors = validate(&config);
-        assert!(errors.iter().any(|e| e.field == "firewall.default_policy.output"));
+        assert!(errors
+            .iter()
+            .any(|e| e.field == "firewall.default_policy.output"));
     }
 
     #[test]
@@ -669,32 +809,62 @@ mod tests {
 
     #[test]
     fn rejects_interface_paths_and_directive_injection() {
-        for name in ["../../etc/evil", "eth0\n[Network]", "eth0*", "", "abcdefghijklmnop"] {
+        for name in [
+            "../../etc/evil",
+            "eth0\n[Network]",
+            "eth0*",
+            "",
+            "abcdefghijklmnop",
+        ] {
             let mut config = default_config();
             config.interfaces.items.push(InterfaceConfig {
-                name: name.into(), method: InterfaceMethod::Dhcp, ..Default::default()
+                name: name.into(),
+                method: InterfaceMethod::Dhcp,
+                ..Default::default()
             });
-            assert!(validate(&config).iter().any(|error| error.field.ends_with(".name")), "{}", name);
+            assert!(
+                validate(&config)
+                    .iter()
+                    .any(|error| error.field.ends_with(".name")),
+                "{}",
+                name
+            );
         }
         let mut config = default_config();
         config.interfaces.items.push(InterfaceConfig {
-            name: "eth0".into(), method: InterfaceMethod::Pppoe,
-            pppoe: Some(PppoeConfig { username: "user".into(), password: "secret\nplugin /tmp/evil.so".into(), ..Default::default() }),
+            name: "eth0".into(),
+            method: InterfaceMethod::Pppoe,
+            pppoe: Some(PppoeConfig {
+                username: "user".into(),
+                password: "secret\nplugin /tmp/evil.so".into(),
+                ..Default::default()
+            }),
             ..Default::default()
         });
-        assert!(validate(&config).iter().any(|error| error.field.ends_with("pppoe.password")));
+        assert!(validate(&config)
+            .iter()
+            .any(|error| error.field.ends_with("pppoe.password")));
     }
 
     #[test]
     fn rejects_wireguard_hook_injection() {
         let mut config = default_config();
-        config.vpn = Some(Vpn { wireguard: Some(WireguardConfig {
-            enabled: true, private_key: "key\nPostUp = touch /tmp/evil".into(),
-            address: "10.0.0.1/24\nPostUp = false".into(), listen_port: 51820, peers: vec![],
-        }) });
+        config.vpn = Some(Vpn {
+            wireguard: Some(WireguardConfig {
+                enabled: true,
+                private_key: "key\nPostUp = touch /tmp/evil".into(),
+                address: "10.0.0.1/24\nPostUp = false".into(),
+                listen_port: 51820,
+                peers: vec![],
+            }),
+        });
         let errors = validate(&config);
-        assert!(errors.iter().any(|error| error.field == "vpn.wireguard.private_key"));
-        assert!(errors.iter().any(|error| error.field == "vpn.wireguard.address"));
+        assert!(errors
+            .iter()
+            .any(|error| error.field == "vpn.wireguard.private_key"));
+        assert!(errors
+            .iter()
+            .any(|error| error.field == "vpn.wireguard.address"));
     }
 
     #[test]
@@ -708,7 +878,9 @@ mod tests {
             config.firewall.rules.forward.push(rule);
             let errors = validate(&config);
             assert!(errors.iter().any(|error| error.field.ends_with(".mark")));
-            assert!(errors.iter().any(|error| error.message.contains("duplicate rule ID")));
+            assert!(errors
+                .iter()
+                .any(|error| error.message.contains("duplicate rule ID")));
         }
     }
 }

@@ -18,7 +18,7 @@ export interface Field {
     | 'interface';
   multiple?: boolean;
   excludeField?: string;
-  options?: string[];
+  options?: (string | { value: string; label: string })[];
   placeholder?: string;
   hint?: string;
   warning?: (values: Values) => string | undefined;
@@ -129,7 +129,9 @@ export function Editor({
                       {field.label}
                       {field.hint && <small>{field.hint}</small>}
                       {field.warning?.(values) && (
-                        <small className="field-warning" role="status">{field.warning(values)}</small>
+                        <small className="field-warning" role="status">
+                          {field.warning(values)}
+                        </small>
                       )}
                     </span>
                   </label>
@@ -168,11 +170,17 @@ export function Editor({
                       required={field.required}
                       disabled={field.disabled}
                     >
-                      {field.options?.map((option) => (
-                        <option key={option} value={option}>
-                          {option || field.placeholder}
-                        </option>
-                      ))}
+                      {field.options?.map((option) => {
+                        const value =
+                          typeof option === 'string' ? option : option.value;
+                        const label =
+                          typeof option === 'string' ? option : option.label;
+                        return (
+                          <option key={value} value={value}>
+                            {label || field.placeholder}
+                          </option>
+                        );
+                      })}
                     </select>
                   ) : field.type === 'textarea' ? (
                     <textarea
@@ -203,7 +211,9 @@ export function Editor({
                   )}
                   {field.hint && <small id={`${id}-hint`}>{field.hint}</small>}
                   {field.warning?.(values) && (
-                    <small className="field-warning" role="status">{field.warning(values)}</small>
+                    <small className="field-warning" role="status">
+                      {field.warning(values)}
+                    </small>
                   )}
                 </div>
               );

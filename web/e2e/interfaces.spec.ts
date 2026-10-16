@@ -43,13 +43,19 @@ test('interface quick fill supports multiple, detected-only and custom names', a
     ingress.getByRole('checkbox', { name: 'ppp0', exact: true }),
   ).toBeChecked();
   await expect(ingress.getByText('Internet', { exact: false })).toBeVisible();
-  await ingress.getByRole('checkbox', { name: 'eth0', exact: true }).check();
+  await ingress
+    .getByRole('checkbox', { name: 'Internet', exact: true })
+    .check();
   await ingress.getByRole('checkbox', { name: 'wlan0', exact: true }).check();
-  await ingress.getByRole('checkbox', { name: 'br0', exact: true }).uncheck();
+  await ingress
+    .getByRole('checkbox', { name: 'Home network', exact: true })
+    .uncheck();
   const input = page.getByRole('textbox', {
     name: 'Ingress interfaces',
     exact: false,
   });
+  await expect(input).toHaveValue('ppp0, Internet, wlan0');
+  await input.focus();
   await expect(input).toHaveValue('ppp0, eth0, wlan0');
   await page.screenshot({
     path: info.outputPath('interface-options.png'),
@@ -66,11 +72,13 @@ test('interface quick fill supports multiple, detected-only and custom names', a
     name: 'Egress interface options',
     exact: true,
   });
-  await egress.getByRole('checkbox', { name: 'eth0', exact: true }).check();
-  await egress.getByRole('checkbox', { name: 'br0', exact: true }).check();
+  await egress.getByRole('checkbox', { name: 'Internet', exact: true }).check();
+  await egress
+    .getByRole('checkbox', { name: 'Home network', exact: true })
+    .check();
   await expect(
     page.getByRole('textbox', { name: 'Egress interface', exact: true }),
-  ).toHaveValue('br0');
+  ).toHaveValue('Home network');
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -122,7 +130,7 @@ test('bridge member and VLAN parent suggestions preserve interface payloads', as
     name: 'VLAN parent options',
     exact: true,
   });
-  await parent.getByRole('checkbox', { name: 'eth0', exact: true }).check();
+  await parent.getByRole('checkbox', { name: 'Internet', exact: true }).check();
   await page
     .getByRole('button', { name: 'Save configuration', exact: true })
     .click();
@@ -162,8 +170,12 @@ test('masquerade quick fill works when live interface detection fails', async ({
     name: 'Masquerade egress interfaces options',
     exact: true,
   });
-  await options.getByRole('checkbox', { name: 'eth0', exact: true }).uncheck();
-  await options.getByRole('checkbox', { name: 'br0', exact: true }).check();
+  await options
+    .getByRole('checkbox', { name: 'Internet', exact: true })
+    .uncheck();
+  await options
+    .getByRole('checkbox', { name: 'Home network', exact: true })
+    .check();
   await page
     .getByRole('textbox', { name: 'Masquerade egress interfaces', exact: true })
     .fill('br0, ppp0');

@@ -10,8 +10,8 @@ use metrics_util::registry::{AtomicStorage, Registry};
 use metrics_util::storage::AtomicBucket;
 use serde::Serialize;
 
-const COLLECT_INTERVAL_SECS: u64 = 5;
-const MAX_SAMPLES: usize = 360; // 30 minutes at 5s intervals
+const COLLECT_INTERVAL_SECS: u64 = 2;
+const MAX_SAMPLES: usize = 30 * 60 / COLLECT_INTERVAL_SECS as usize;
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct IfaceSample {
@@ -479,6 +479,12 @@ fn read_iface_stat(iface: &str, stat: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampling_cadence_preserves_thirty_minutes_of_history() {
+        assert_eq!(COLLECT_INTERVAL_SECS, 2);
+        assert_eq!(MAX_SAMPLES, 900);
+    }
 
     #[test]
     fn recorder_stores_counter_value() {

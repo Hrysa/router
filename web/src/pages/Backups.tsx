@@ -9,7 +9,7 @@ import {
 } from 'react-feather';
 import { encoded, getConfig, write } from '../lib/api';
 import { bytes } from '../lib/format';
-import { useApi } from '../lib/queries';
+import { useApi, useApplyStatus } from '../lib/queries';
 import type { ApplyResult, Backup } from '../lib/types';
 import {
   Badge,
@@ -25,6 +25,7 @@ import {
 
 export function Backups() {
   const backups = useApi<{ backups: Backup[] }>('/config/backups');
+  const applyStatus = useApplyStatus();
   const ui = useUi();
   const client = useQueryClient();
   const writes = useIsMutating({ mutationKey: ['write'] });
@@ -32,35 +33,26 @@ export function Backups() {
     valid: boolean;
     errors: { field: string; message: string }[];
   } | null>(null);
-  const validate = useSave(
-    async () => {
-      const fresh = await getConfig();
-      const result = await write<{
-        valid: boolean;
-        errors: { field: string; message: string }[];
-      }>('/config/validate', fresh);
-      setValidation(result);
-    },
-    'Schema validation completed. This does not apply configuration.',
-    false,
-  );
-  const restore = useSave(
-    async (id: string) => {
-      const result = await write<ApplyResult>(
-        `/config/backups/${encoded(id)}/restore`,
+  const validate = useSave(async () => {
+    const fresh = await getConfig();
+    const result = await write<{
+      valid: boolean;
+      errors: { field: string; message: string }[];
+    }>('/config/validate', fresh);
+    setValidation(result);
+  }, 'Schema validation completed. This does not apply configuration.');
+  const restore = useSave(async (id: string) => {
+    const result = await write<ApplyResult>(
+      `/config/backups/${encoded(id)}/restore`,
+    );
+    if (!result.success || result.errors?.length)
+      throw new Error(
+        result.errors?.join('\n') ||
+          'Restore did not complete. Check the router for partial changes.',
       );
-      if (!result.success || result.errors?.length)
-        throw new Error(
-          result.errors?.join('\n') ||
-            'Restore did not complete. Check the router for partial changes.',
-        );
-      ui.markPending(false);
-      setValidation(null);
-      client.removeQueries({ queryKey: ['/config'] });
-    },
-    'Backup restored and applied. If authentication changed, sign in again.',
-    false,
-  );
+    setValidation(null);
+    client.removeQueries({ queryKey: ['/config'] });
+  }, 'Backup restored and applied. If authentication changed, sign in again.');
   return (
     <>
       <PageHeader
@@ -80,13 +72,25 @@ export function Backups() {
           <h2>Save is not Apply</h2>
           <p>
             Editors save configuration on the router. Use Apply changes to
-            reconcile services and the live firewall. The saved indicator only
-            tracks saves made in this browser.
+            reconcile services and the live firewall. The indicator compares
+            saved configuration with the last successful Apply on the server,
+            including sing-box JSONC saved in config.yml. It does not check
+            deployed files or live service health.
           </p>
-          <Badge tone={ui.pending ? 'warning' : 'neutral'}>
-            {ui.pending
-              ? 'Saved changes not applied here'
-              : 'No locally tracked pending saves'}
+          <Badge
+            tone={
+              applyStatus.data?.pending || applyStatus.isError
+                ? 'warning'
+                : 'neutral'
+            }
+          >
+            {applyStatus.isError
+              ? 'Unable to check Apply status'
+              : !applyStatus.data
+                ? 'Checking saved configuration…'
+                : applyStatus.data.pending
+                  ? 'Apply required'
+                  : 'No changes to apply'}
           </Badge>
         </Card>
         <Card>

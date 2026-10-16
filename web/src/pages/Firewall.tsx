@@ -10,6 +10,7 @@ import {
 } from 'react-feather';
 import { encoded, getConfig, write } from '../lib/api';
 import { formatPort, list } from '../lib/format';
+import { interfaceDisplayName } from '../lib/interfaces';
 import { useConfig } from '../lib/queries';
 import type { FirewallRule, NftSet, PortForward } from '../lib/types';
 import {
@@ -35,7 +36,9 @@ import {
 type Tab = 'input' | 'forward' | 'nat' | 'sets';
 const tabs: Tab[] = ['input', 'forward', 'nat', 'sets'];
 function tabFromHash(): Tab {
-  const value = new URLSearchParams(window.location.hash.split('?')[1]).get('tab');
+  const value = new URLSearchParams(window.location.hash.split('?')[1]).get(
+    'tab',
+  );
   return tabs.includes(value as Tab) ? (value as Tab) : 'input';
 }
 
@@ -59,10 +62,16 @@ export function Firewall() {
   };
   const [editing, setEditing] = useState<Editing | null>(null);
   const firewall = config.data?.firewall;
-  const missingMasquerade = firewall?.rules.forward.filter((rule) =>
-    rule.enabled !== false && rule.action === 'accept' && rule.route_via &&
-    wanMasqueradeWarning(config.data, rule.route_via),
-  ) ?? [];
+  const interfaceName = (name: string) =>
+    interfaceDisplayName(name, config.data?.interfaces.items);
+  const missingMasquerade =
+    firewall?.rules.forward.filter(
+      (rule) =>
+        rule.enabled !== false &&
+        rule.action === 'accept' &&
+        rule.route_via &&
+        wanMasqueradeWarning(config.data, rule.route_via),
+    ) ?? [];
   const operation = useSave(
     ({
       path,
@@ -137,8 +146,20 @@ export function Firewall() {
       <QueryNotice query={config} />
       {tab === 'forward' && missingMasquerade.length > 0 && (
         <div className="warning-banner" role="status">
-          <p>WAN selection has no configured masquerade for {missingMasquerade.map((rule) => `rule #${rule.id} (${rule.route_via})`).join(', ')}. Private LAN clients normally need source NAT unless the upstream router routes their subnet back.</p>
-          <button onClick={() => setEditing({ kind: 'policy' })}>Review masquerade</button>
+          <p>
+            WAN selection has no configured masquerade for{' '}
+            {missingMasquerade
+              .map(
+                (rule) =>
+                  `rule #${rule.id} (${interfaceName(rule.route_via ?? '')})`,
+              )
+              .join(', ')}
+            . Private LAN clients normally need source NAT unless the upstream
+            router routes their subnet back.
+          </p>
+          <button onClick={() => setEditing({ kind: 'policy' })}>
+            Review masquerade
+          </button>
         </div>
       )}
       <div className="summary-strip">
@@ -250,12 +271,18 @@ export function Firewall() {
                     <td>
                       <span className="mono">
                         {rule.interfaces_invert ? 'not ' : ''}
-                        {rule.interfaces.join(', ') || 'Any ingress'}
-                        {rule.oif ? ` → ${rule.oif}` : ''}
-                        {rule.route_via ? ` → WAN ${rule.route_via}` : ''}
+                        {rule.interfaces.map(interfaceName).join(', ') ||
+                          'Any ingress'}
+                        {rule.oif ? ` → ${interfaceName(rule.oif)}` : ''}
+                        {rule.route_via
+                          ? ` → WAN ${interfaceName(rule.route_via)}`
+                          : ''}
                       </span>
                       <small className="cell-detail">
-                        {rule.route_via && rule.preserve_internal_routes === false ? 'Includes internal destinations · ' : ''}
+                        {rule.route_via &&
+                        rule.preserve_internal_routes === false
+                          ? 'Includes internal destinations · '
+                          : ''}
                         {rule.proto?.join(', ') || 'Any protocol'}
                         {rule.dport ? ` · port ${formatPort(rule.dport)}` : ''}
                         {rule.saddr ? ` · from ${rule.saddr}` : ''}
@@ -393,7 +420,9 @@ export function Firewall() {
                         {formatPort(rule.target_port) || 'Any port'}
                       </small>
                     </td>
-                    <td className="mono">{rule.interfaces.join(', ')}</td>
+                    <td className="mono">
+                      {rule.interfaces.map(interfaceName).join(', ')}
+                    </td>
                     <td className="mono">
                       {rule.redirect_address}
                       {rule.redirect_port

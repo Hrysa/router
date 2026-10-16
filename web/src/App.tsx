@@ -28,7 +28,7 @@ import {
 } from 'react-feather';
 import { getToken, setToken, write } from './lib/api';
 import { errorMessage } from './lib/format';
-import { useSystem } from './lib/queries';
+import { useApplyStatus, useSystem } from './lib/queries';
 import { Badge, canLeave, useUi } from './lib/ui';
 import type { ApplyResult } from './lib/types';
 import { Login } from './pages/Login';
@@ -114,6 +114,7 @@ function Shell({
   const routeRef = useRef(route);
   const [mobileOpen, setMobileOpen] = useState(false);
   const system = useSystem();
+  const applyStatus = useApplyStatus();
   const client = useQueryClient();
   const ui = useUi();
   const writes = useIsMutating({ mutationKey: ['write'] });
@@ -145,17 +146,16 @@ function Shell({
       return result;
     },
     onSuccess: (result) => {
-      ui.markPending(false);
       ui.notify(
         `Configuration applied. ${result.services_restarted.length} service(s) reconciled.`,
       );
-      void client.invalidateQueries();
     },
     onError: (error) =>
       ui.notify(
         `${errorMessage(error)}\nApply can leave partial changes. Check the router before retrying.`,
         true,
       ),
+    onSettled: () => client.invalidateQueries(),
   });
   const sidebar = (
     <>
@@ -283,11 +283,15 @@ function Shell({
             </strong>
           </div>
           <div className="topbar-actions">
-            <span className="save-status">
-              {ui.pending ? (
-                <Badge tone="warning">Saved · not applied here</Badge>
+            <span className="save-status" id="apply-status">
+              {applyStatus.isError ? (
+                <Badge tone="warning">Unable to check Apply status</Badge>
+              ) : !applyStatus.data ? (
+                <span className="subtle">Checking saved configuration…</span>
+              ) : applyStatus.data.pending ? (
+                <Badge tone="warning">Apply required</Badge>
               ) : (
-                <span className="subtle">Save first. Apply when ready.</span>
+                <span className="subtle">No changes to apply</span>
               )}
             </span>
             <button
@@ -299,13 +303,24 @@ function Shell({
             </button>
             <button
               className="primary apply-button"
-              disabled={writes > 0}
+              aria-describedby="apply-status"
+              disabled={
+                writes > 0 ||
+                applyStatus.isError ||
+                applyStatus.isFetching ||
+                !applyStatus.data?.pending
+              }
+              title={
+                applyStatus.isError
+                  ? 'Unable to check saved configuration. Refresh to retry.'
+                  : undefined
+              }
               onClick={async () => {
                 if (
                   await ui.confirm({
                     title: 'Apply saved configuration?',
                     message:
-                      'Only saved configuration is applied; unsaved editor text is not included. This changes live networking and firewall state and restarts affected services, including sing-box. You may lose access. Failure can leave partial changes; apply is not transactional.',
+                      'Only saved configuration is applied; unsaved editor text is not included. This reconciles live networking and firewall state, starting inactive services and restarting changed services. Unchanged nftables rules and running sing-box are skipped after a successful apply. You may lose access. Failure can leave partial changes; apply is not transactional.',
                     label: 'Apply configuration',
                     dangerous: true,
                   })

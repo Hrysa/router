@@ -2,6 +2,7 @@
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct ChangeSet {
     pub nftables: bool,
+    pub singbox: bool,
     pub dhcpd: bool,
     pub ppp: bool,
     pub interfaces: bool,

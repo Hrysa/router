@@ -1,6 +1,49 @@
 import { expect, test } from 'bun:test';
-import { interfaceOptions, toggleInterface } from '../src/lib/interfaces';
-import type { InterfaceDetail } from '../src/lib/types';
+import {
+  interfaceDisplayName,
+  interfaceOptions,
+  toggleInterface,
+} from '../src/lib/interfaces';
+import type { InterfaceConfig, InterfaceDetail } from '../src/lib/types';
+
+test('interface display names prefer labels without changing device identities', () => {
+  const configured: InterfaceConfig[] = [
+    { name: 'eth0', label: ' Internet ', method: 'dhcp' },
+    { name: 'eth1', label: 'Internet', method: 'dhcp' },
+    { name: 'eth2', label: '  ', method: 'static' },
+    { name: 'br0', method: 'static' },
+  ];
+  expect(interfaceDisplayName('eth0', configured)).toBe('Internet');
+  expect(interfaceDisplayName('eth1', configured)).toBe('Internet');
+  expect(interfaceDisplayName('eth2', configured)).toBe('eth2');
+  expect(interfaceDisplayName('br0', configured)).toBe('br0');
+  expect(interfaceDisplayName('tun99', configured)).toBe('tun99');
+  expect(interfaceDisplayName('eth0')).toBe('eth0');
+  expect(interfaceDisplayName('', configured)).toBe('');
+  expect(interfaceOptions(configured).map((option) => option.name)).toEqual([
+    'br0',
+    'eth0',
+    'eth1',
+    'eth2',
+  ]);
+});
+
+test('the managed PPPoE tunnel uses its uplink label unless configured explicitly', () => {
+  const configured: InterfaceConfig[] = [
+    { name: 'eth0', label: 'Internet', method: 'pppoe' },
+  ];
+  expect(interfaceDisplayName('ppp0', configured)).toBe('Internet');
+  expect(interfaceDisplayName('ppp1', configured)).toBe('ppp1');
+  expect(
+    interfaceDisplayName('ppp0', [{ name: 'eth0', method: 'pppoe' }]),
+  ).toBe('ppp0');
+  expect(
+    interfaceDisplayName('ppp0', [
+      ...configured,
+      { name: 'ppp0', label: 'Tunnel', method: 'dhcp' },
+    ]),
+  ).toBe('Tunnel');
+});
 
 const detected: InterfaceDetail[] = [
   { name: 'eth0', up: false, mtu: 1500, mac: '', rx_bytes: 0, tx_bytes: 0 },

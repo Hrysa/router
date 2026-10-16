@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Activity, ArrowDown, ArrowUp } from 'react-feather';
 import { bytes, latest } from '../lib/format';
-import { useInterfaces, useMetrics } from '../lib/queries';
+import { interfaceDisplayName } from '../lib/interfaces';
+import { useConfig, useInterfaces, useMetrics } from '../lib/queries';
 import {
   Badge,
   Card,
@@ -14,6 +15,7 @@ import {
 import { TrafficChart } from '../components/TrafficChart';
 
 export function Monitoring() {
+  const config = useConfig();
   const metrics = useMetrics();
   const live = useInterfaces();
   const [selected, setSelected] = useState('');
@@ -28,7 +30,7 @@ export function Monitoring() {
         actions={
           <span className="live-label">
             <Activity size={16} />
-            5-second samples · 30-minute history
+            2-second samples · 30-minute history
           </span>
         }
       />
@@ -44,7 +46,11 @@ export function Monitoring() {
             onChange={(event) => setSelected(event.target.value)}
           >
             {names.length ? (
-              names.map((item) => <option key={item}>{item}</option>)
+              names.map((item) => (
+                <option key={item} value={item}>
+                  {interfaceDisplayName(item, config.data?.interfaces.items)}
+                </option>
+              ))
             ) : (
               <option value="">No samples</option>
             )}
@@ -70,7 +76,7 @@ export function Monitoring() {
             timestamps={metrics.data.timestamps}
             received={traffic.rx_bps}
             transmitted={traffic.tx_bps}
-            label={`${name} traffic history`}
+            label={`${interfaceDisplayName(name, config.data?.interfaces.items)} traffic history`}
           />
         ) : (
           <Empty
@@ -106,7 +112,12 @@ export function Monitoring() {
         >
           {live.data?.interfaces.map((iface) => (
             <tr key={iface.name}>
-              <td className="mono">{iface.name}</td>
+              <td>
+                {interfaceDisplayName(
+                  iface.name,
+                  config.data?.interfaces.items,
+                )}
+              </td>
               <td>
                 <Badge tone={iface.up ? 'success' : 'neutral'}>
                   {iface.up ? 'Up' : 'Down'}

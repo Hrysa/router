@@ -17,7 +17,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system overview and componen
 - **Backup/Restore** — automatic config backups with rollback
 - **REST API** — full CRUD on all config sections
 - **SPA Web UI** — responsive React dashboard inspired by Yacd-meta, with light/dark/system themes, embedded in the Rust binary
-- **sing-box integration** — user-managed JSONC configuration and service control
+- **sing-box integration** — raw JSONC stored in routerd configuration, deployed on Apply
 
 There is no managed DNS resolver. `/api/monitor/traffic` and `/api/monitor/connections` currently return placeholders; use `/api/metrics` for collected interface/firewall traffic.
 
@@ -45,8 +45,11 @@ cargo build --release
 ### Run
 
 ```bash
-# With existing config directory
+# Normal startup: other network setup, but no nftables or sing-box apply
 sudo ./target/release/routerd -c /etc/router --listen 127.0.0.1:8443
+
+# Firewall-only startup, then serve the UI/API; sing-box is left to systemd
+sudo ./target/release/routerd --boot -c /etc/router --listen 127.0.0.1:8443
 
 # First run (creates a draft config and starts the UI, preserving host networking)
 sudo ./target/release/routerd --init -c /etc/router --listen 127.0.0.1:8443
@@ -63,9 +66,25 @@ Initialization detects interfaces and saves a **draft** router configuration. It
 
 Review the draft before using `POST /api/config/apply`: the generated LAN address is `192.168.1.1/24` and the default firewall/NAT rules are router defaults, not a full import of the host's current setup. Applying changes explicitly takes over the configured services.
 
-Keep `--init` on subsequent starts to continue skipping startup changes. Starting without `--init` applies the saved configuration automatically.
+Keep `--init` on subsequent starts to continue skipping startup changes. Normal startup reconciles saved interface, DHCP, PPP, WireGuard, sysctl, routing, and shaping configuration, changes NIC offloads, and runs startup hooks, but does not check/install nftables rules or read/control sing-box. Manage sing-box startup with systemd.
 
-Normal startup and explicit apply require root and the configured service binaries. `nft` is mandatory; Kea's syntax check runs only when `kea-dhcp4` is installed. Initialization needs at least two available network interfaces to generate its WAN/LAN draft.
+`--boot` instead validates the saved configuration, checks and installs only its nftables JSON, then serves the UI/API. It skips other service reconciliation, generated-file writes, sysctl, routes, shaping, NIC offloads, and startup hooks; it never controls sing-box. It requires an existing config and cannot be combined with `--init` or `--install-singbox`. This is a running daemon mode, not a one-shot command. TPROXY/WAN policy routes and other non-firewall setup must already be provisioned separately or through an explicit full Apply.
+
+Normal startup, `--boot`, and explicit Apply require root for their host changes. `nft` is mandatory for `--boot` and explicit Apply, but not normal startup; Kea's syntax check runs only when `kea-dhcp4` is installed during normal startup or full Apply. Initialization needs at least two available network interfaces to generate its WAN/LAN draft.
+
+### sing-box config/unit setup
+
+After saving JSONC under `singbox.config` in your routerd configuration:
+
+```bash
+sudo ./target/release/routerd --install-singbox -c /etc/router
+```
+
+This reads `/etc/router/config.yml` and **always overwrites both** `/etc/sing-box/config.jsonc` (`0600`) and `/etc/systemd/system/sing-box.service` (`0644`), even when the files already exist or have identical contents. Comments and whitespace in saved JSONC are preserved. Missing or empty `singbox.config`, unreadable configuration, and invalid YAML fail before either destination is changed. The source configuration, backups, and authentication state are not modified. Each replacement is atomic, but the two-file operation is not transactional: a later write failure can leave the config replaced without the unit.
+
+After both writes succeed, setup runs `systemctl daemon-reload` with a 30-second timeout. A nonzero exit, execution error, or timeout fails the command and reports that the files are already installed; no reload is attempted after input/write failures. It does not enable, start, or restart sing-box.
+
+No sing-box binary is downloaded, installed, replaced, or executed. Install it separately at `/usr/local/bin/sing-box`, which the generated unit uses. Setup does not run `sing-box check`, startup hooks, networking changes, or the API server. Validation with `sing-box check` remains part of editor Save and full Apply when the binary is installed. Enable/start the unit separately when ready. `--install-singbox` cannot be combined with `--init` or `--boot`.
 
 ### Security and transport
 
@@ -269,9 +288,10 @@ Options:
       --log-level <LEVEL>  Log level: trace, debug, info, warn, error [default: info]
       --log-format <FMT>   Log format: text, json [default: text]
       --init               Create config if missing; start UI/API without changing networking
+      --boot               Check/install only nftables, then start UI/API
       --tls-cert <PATH>    TLS certificate (PEM)
       --tls-key <PATH>     TLS private key (PEM)
-      --install-singbox    Download/install sing-box from GitHub releases, then exit
+      --install-singbox    Overwrite sing-box config/unit, run daemon-reload, then exit; no download
   -h, --help               Print help
 ```
 
@@ -290,7 +310,7 @@ All routes listed below require `Authorization: Bearer <token>`, except the thre
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/status` | Aggregated system status |
-| GET | `/api/status/system` | CPU, memory, uptime |
+| GET | `/api/status/system` | Cumulative CPU counters and memory usage |
 
 ### Config
 | Method | Endpoint | Description |
@@ -315,8 +335,9 @@ All routes listed below require `Authorization: Bearer <token>`, except the thre
 | GET / POST | `/api/config/dhcp/leases` | List / create static DHCP leases |
 | DELETE | `/api/config/dhcp/leases/:mac` | Delete a static lease |
 | POST | `/api/config/hooks` | Replace lifecycle hooks |
-| GET / PUT | `/api/singbox/config` | Read / write raw sing-box JSONC (not a JSON wrapper) |
+| GET / PUT | `/api/singbox/config` | GET saved `{raw}`; PUT raw JSONC into `config.yml` without deploying |
 | POST | `/api/config/validate` | Validate config |
+| GET | `/api/config/apply/status` | Read saved-versus-applied status (`pending`) |
 | POST | `/api/config/apply` | Apply config |
 | POST | `/api/config/rollback` | Rollback to last backup |
 | GET | `/api/config/backups` | List backups |
@@ -340,7 +361,7 @@ All routes listed below require `Authorization: Bearer <token>`, except the thre
 | GET | `/api/monitor/traffic` | Traffic stats |
 | GET | `/api/monitor/connections` | Conntrack table |
 | GET | `/api/monitor/leases` | DHCP leases |
-| GET | `/api/metrics` | Interface/firewall time series (up to 30 minutes) |
+| GET | `/api/metrics` | Interface/firewall time series (2-second samples, up to 30 minutes) |
 | GET | `/api/metrics/current` | Latest collected sample |
 | GET | `/api/firewall/stats` | Per-rule nftables counters |
 
@@ -361,12 +382,28 @@ Service configs generated from `config.yml`:
 - `/etc/ppp/peers/isp` and `/etc/ppp/chap-secrets` — PPPoE
 - `/etc/wireguard/wg0.conf` — WireGuard
 - `/etc/sysctl.d/90-routerd.conf` — kernel network settings
+- `/etc/sing-box/config.jsonc` — raw `singbox.config` JSONC, written on explicit full Apply or `--install-singbox` setup
 
-nftables is rendered as JSON and applied with `nft -j -f`; no `/etc/nftables.conf` is generated. Routerd replaces only its four owned tables (`inet filter`, `ip nat`, `inet mangle`, `inet blackhole`); do not place unrelated rules in those tables. Other nftables tables are preserved.
+nftables is rendered as JSON and applied with `nft -j -f`; no `/etc/nftables.conf` is generated. Routerd replaces only its four owned tables (`inet filter`, `ip nat`, `inet mangle`, `inet blackhole`); do not place unrelated rules in those tables. Other nftables tables are preserved. Normal startup leaves live rules untouched; use `--boot` to restore saved rules after reboot. After a successful full Apply, unchanged rendered rules are skipped on subsequent applies, preserving their counters. `--boot`, the first explicit full Apply in a process (regardless of startup mode), and forced backup restores always install the rules. Required syntax validation runs for each of these firewall operations. This in-memory comparison does not detect external modifications to live nftables tables.
 
-`/etc/sing-box/config.jsonc` is user-managed, not generated from `config.yml`. The API checks writes with `sing-box check` when installed. Every apply attempts to start/restart sing-box; failures are fatal when its configuration exists and otherwise logged as optional-service warnings.
+sing-box JSONC is stored verbatim in `config.yml` under `singbox.config`, preserving comments and whitespace and including it in routerd backups/restores:
+
+```yaml
+singbox:
+  config: |
+    {
+      // Preserved in the deployed file
+      "log": { "level": "info" }
+    }
+```
+
+`GET /api/singbox/config` reads this saved value, not `/etc/sing-box/config.jsonc`. `PUT` accepts raw JSONC, checks it with `sing-box check` when installed, and saves only `config.yml`; neither the deployed file nor the service changes until explicit full Apply. Full Apply validates again, compares the saved JSONC with the deployed file and last successful snapshot, atomically writes `/etc/sing-box/config.jsonc` at `0600` when needed, then restarts an active service on change or first/forced Apply, or starts it if inactive. Missing deployed files are recreated; other read errors and all configured-service failures propagate. Direct deployed-file edits are overwritten by the saved value on explicit Apply, not imported into routerd.
+
+Existing configurations without a `singbox` section remain valid and leave the deployed file/service unmanaged. To migrate, paste the existing `/etc/sing-box/config.jsonc` contents into the WebUI sing-box editor and Save before Apply; there is no automatic import. Empty `singbox.config` is rejected. Omitting the whole section leaves existing deployed files/services untouched, including when restoring an older backup without that section. All startup modes still skip sing-box deployment/control; systemd manages its boot lifecycle. The service-content snapshot is published only after complete full-Apply success; failures/cancellation leave retry available. Neither normal startup nor firewall-only `--boot` publishes a full-Apply snapshot.
 
 The authoritative schema is `src/config/schema.rs`; validation lives in `src/config/validator.rs`. The runtime `config/` directory is gitignored, not a checked-in schema/example. Section updates replace that section rather than merging individual fields.
+
+The WebUI polls `GET /api/config/apply/status` every five seconds and refreshes it after writes. The read-only endpoint compares saved typed configuration, including `singbox.config`, with the last successful in-process Apply. It does not read the deployed JSONC file. Apply is disabled when unchanged, while checking status, or if status cannot be read; first applies and retries after failed applies remain available. Same-content saves and saved reversions do not require Apply. This tracks saved-versus-applied configuration, not unsaved editor drafts, external edits to generated service files, or live service/kernel health; use explicit API Apply to reconcile generated-file drift and service controls for live recovery. Startup hooks still require normal daemon startup. The API Apply endpoint remains available for explicit reconciliation.
 
 ## Development
 
@@ -378,7 +415,8 @@ cargo test
 RUST_LOG=debug cargo run -- --init -c config --listen 127.0.0.1:8443
 
 # Check code
-cargo clippy
+cargo clippy --locked --all-targets -- -D warnings
+cargo fmt --all -- --check
 
 # UI validation and embedded asset refresh after web changes
 cd web && bun run test && bun run check && bun run build

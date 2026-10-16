@@ -60,6 +60,13 @@ export function errorMessage(error: unknown): string {
 export function latest(values?: number[]): number | undefined {
   return values?.at(-1);
 }
+export function uptime(seconds: number | undefined): string {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0)
+    return '—';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  return `${days}d ${hours}h`;
+}
 export function passwordError(password: string): string | undefined {
   const length = new TextEncoder().encode(password).length;
   if (!length) return 'Enter a password.';

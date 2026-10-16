@@ -22,8 +22,10 @@ test('overview, all routes, themes and responsive layout', async ({
   await expect(
     page.getByRole('heading', { name: 'Your network, at a glance.' }),
   ).toBeVisible();
-  await expect(page.getByRole('img', { name: /eth0 traffic/ })).toBeVisible();
-  await expect(page.getByText('2d 3h 22m')).toBeVisible();
+  await expect(
+    page.getByRole('img', { name: /Internet traffic/ }),
+  ).toBeVisible();
+  await expect(page.locator('.uptime-value')).toHaveText('2d 3h');
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -76,6 +78,9 @@ test('interface save is separate from Apply, with confirmed activation', async (
 }) => {
   const state = await mockRouter(page);
   await page.goto('/#/interfaces');
+  await expect(
+    page.getByRole('button', { name: 'Apply changes' }),
+  ).toBeDisabled();
   await page.getByRole('button', { name: 'Add interface' }).click();
   await page.getByLabel('Interface name', { exact: false }).fill('vlan10');
   await page.getByLabel('Display label').fill('Guest network');
@@ -108,6 +113,12 @@ test('interface save is separate from Apply, with confirmed activation', async (
   await expect
     .poll(() => state.writes.some((entry) => entry.path === '/config/apply'))
     .toBe(true);
+  await expect(
+    page.getByRole('button', { name: 'Apply changes' }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText('No changes to apply', { exact: true }),
+  ).toBeAttached();
 });
 
 test('firewall editor preserves rule ID and array states', async ({ page }) => {
@@ -201,6 +212,7 @@ test('raw sing-box comments, draft protection and explicit live controls', async
 }) => {
   const state = await mockRouter(page);
   await page.goto('/#/singbox');
+  const deployed = state.deployedRaw;
   const value = '{\n // Still a comment\n "log": { "level": "debug" }\n}';
   await page.getByLabel('sing-box JSONC configuration').fill(value);
   page.once('dialog', (dialog) => dialog.dismiss());
@@ -216,6 +228,8 @@ test('raw sing-box comments, draft protection and explicit live controls', async
     .getByRole('button', { name: 'Save configuration', exact: true })
     .click();
   await expect.poll(() => state.raw).toBe(value);
+  expect(state.config.singbox?.config).toBe(value);
+  expect(state.deployedRaw).toBe(deployed);
   expect(state.writes.map((entry) => entry.path)).toEqual(['/singbox/config']);
   await navigate(page, 'Services');
   await page
@@ -325,26 +339,49 @@ test('firewall tab survives refresh and browser history', async ({ page }) => {
   await page.getByRole('tab', { name: /Forward rules/ }).click();
   await expect(page).toHaveURL(/#\/firewall\?tab=forward$/);
   await page.reload();
-  await expect(page.getByRole('tab', { name: /Forward rules/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(
+    page.getByRole('tab', { name: /Forward rules/ }),
+  ).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: /Named sets/ }).click();
   await page.goBack();
-  await expect(page.getByRole('tab', { name: /Forward rules/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(
+    page.getByRole('tab', { name: /Forward rules/ }),
+  ).toHaveAttribute('aria-selected', 'true');
   await page.goForward();
-  await expect(page.getByRole('tab', { name: /Named sets/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: /Named sets/ })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
 });
 
-test('common interface MTU and MSS settings persist without applying', async ({ page }) => {
+test('common interface MTU and MSS settings persist without applying', async ({
+  page,
+}) => {
   const state = await mockRouter(page);
   await page.goto('/#/interfaces');
-  await page.getByRole('button', { name: 'Edit br0', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Edit Home network', exact: true })
+    .click();
   await page.getByLabel('Device MTU', { exact: true }).fill('1500');
   await page.getByLabel('TCP MSS path MTU', { exact: true }).fill('1492');
-  await page.getByRole('button', { name: 'Save configuration', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Save configuration', exact: true })
+    .click();
   await expect(page.getByRole('dialog')).not.toBeVisible();
-  expect(state.config.interfaces.items.find((iface) => iface.name === 'br0')).toMatchObject({ mtu: 1500, mss_clamp_mtu: 1492 });
-  await page.getByRole('button', { name: 'Edit br0', exact: true }).click();
-  await expect(page.getByLabel('Device MTU', { exact: true })).toHaveValue('1500');
-  await expect(page.getByLabel('TCP MSS path MTU', { exact: true })).toHaveValue('1492');
-  expect(state.writes.some((entry) => entry.path === '/config/apply')).toBe(false);
+  expect(
+    state.config.interfaces.items.find((iface) => iface.name === 'br0'),
+  ).toMatchObject({ mtu: 1500, mss_clamp_mtu: 1492 });
+  await page
+    .getByRole('button', { name: 'Edit Home network', exact: true })
+    .click();
+  await expect(page.getByLabel('Device MTU', { exact: true })).toHaveValue(
+    '1500',
+  );
+  await expect(
+    page.getByLabel('TCP MSS path MTU', { exact: true }),
+  ).toHaveValue('1492');
+  expect(state.writes.some((entry) => entry.path === '/config/apply')).toBe(
+    false,
+  );
   expect(state.unexpected).toEqual([]);
 });

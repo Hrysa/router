@@ -14,6 +14,8 @@ pub struct Config {
     pub dhcp: Dhcp,
     #[serde(default)]
     pub firewall: Firewall,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub singbox: Option<Singbox>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vpn: Option<Vpn>,
     #[serde(default)]
@@ -26,8 +28,13 @@ pub struct Config {
     pub auth: Auth,
 }
 
-/// Authentication configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Singbox {
+    pub config: String,
+}
+
+/// Authentication configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Auth {
     /// Bcrypt hash of the admin password. Empty allows setup only, not API access.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -35,15 +42,6 @@ pub struct Auth {
     /// Secret used to sign JWTs. Generated automatically if empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub jwt_secret: String,
-}
-
-impl Default for Auth {
-    fn default() -> Self {
-        Self {
-            password_hash: String::new(),
-            jwt_secret: String::new(),
-        }
-    }
 }
 
 impl Auth {
@@ -80,8 +78,12 @@ pub struct StaticRoute {
     pub enabled: bool,
 }
 
-fn main_route_table() -> u32 { 254 }
-fn static_route_metric() -> u32 { 100 }
+fn main_route_table() -> u32 {
+    254
+}
+fn static_route_metric() -> u32 {
+    100
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Interfaces {
@@ -90,11 +92,6 @@ pub struct Interfaces {
 }
 
 impl Interfaces {
-    /// Find WAN interface (pppoe/dhcp method, or static with gateway).
-    pub fn wan(&self) -> Option<&InterfaceConfig> {
-        self.items.iter().find(|i| i.is_wan())
-    }
-
     /// Find LAN interface (static method, no vlan_id, no gateway).
     pub fn lan(&self) -> Option<&InterfaceConfig> {
         self.items.iter().find(|i| i.is_lan())
@@ -147,7 +144,10 @@ impl InterfaceConfig {
     /// WAN: pppoe/dhcp method, or static with gateway set.
     pub fn is_wan(&self) -> bool {
         self.method != InterfaceMethod::Static
-            || self.static_config.as_ref().map_or(false, |s| !s.gateway.is_empty())
+            || self
+                .static_config
+                .as_ref()
+                .is_some_and(|static_config| !static_config.gateway.is_empty())
     }
 
     /// LAN: static method, no vlan_id, not WAN.
@@ -161,18 +161,13 @@ impl InterfaceConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum InterfaceMethod {
     Pppoe,
     Dhcp,
+    #[default]
     Static,
-}
-
-impl Default for InterfaceMethod {
-    fn default() -> Self {
-        Self::Static
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -334,7 +329,7 @@ pub struct StaticLease {
 
 // ── Firewall ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Firewall {
     #[serde(default)]
     pub default_policy: DefaultPolicy,
@@ -346,18 +341,6 @@ pub struct Firewall {
     pub blackhole: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sets: Vec<NftSet>,
-}
-
-impl Default for Firewall {
-    fn default() -> Self {
-        Self {
-            default_policy: DefaultPolicy::default(),
-            rules: FirewallRules::default(),
-            nat: Nat::default(),
-            blackhole: vec![],
-            sets: vec![],
-        }
-    }
 }
 
 /// nftables named set — a reusable collection of elements (IPs, ports, etc.).
@@ -433,11 +416,13 @@ pub struct FirewallRules {
 
 impl FirewallRules {
     pub fn next_id(&self) -> u32 {
-        self.input.iter()
+        self.input
+            .iter()
             .chain(self.forward.iter())
             .map(|rule| rule.id)
             .max()
-            .unwrap_or(0).saturating_add(1)
+            .unwrap_or(0)
+            .saturating_add(1)
     }
 }
 
@@ -461,7 +446,11 @@ pub struct FirewallRule {
     /// Keep configured internal destinations on normal routing when selecting a WAN.
     #[serde(default = "default_true")]
     pub preserve_internal_routes: bool,
-    #[serde(default, deserialize_with = "deserialize_proto", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_proto",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub proto: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dport: Option<PortSpec>,
@@ -541,7 +530,12 @@ pub struct PortForward {
     pub comment: String,
     /// Destination port to match (WAN-side). Aliases: wan_port, source_port.
     /// Optional for non-TCP/UDP protocols (ICMP, GRE, etc.).
-    #[serde(alias = "wan_port", alias = "source_port", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        alias = "wan_port",
+        alias = "source_port",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub target_port: Option<PortSpec>,
     /// Destination address to match (WAN-side). Optional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -612,7 +606,7 @@ pub struct WireguardPeer {
 
 // ── Monitoring ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Monitoring {
     #[serde(default = "default_true")]
     pub vnstat: bool,
@@ -622,17 +616,6 @@ pub struct Monitoring {
     pub bandwidth_alert: BandwidthAlert,
     #[serde(default)]
     pub interface_stats: InterfaceStats,
-}
-
-impl Default for Monitoring {
-    fn default() -> Self {
-        Self {
-            vnstat: false,
-            syslog_remote: SyslogRemote::default(),
-            bandwidth_alert: BandwidthAlert::default(),
-            interface_stats: InterfaceStats::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -752,16 +735,10 @@ fn default_conntrack_max() -> u32 {
     65536
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Ipv6Config {
     #[serde(default)]
     pub enabled: bool,
-}
-
-impl Default for Ipv6Config {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
 }
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
@@ -803,7 +780,11 @@ where
     let opt: Option<ProtoInput> = Option::deserialize(deserializer)?;
     Ok(opt.map(|v| match v {
         ProtoInput::Single(s) => {
-            if s.is_empty() { vec![] } else { vec![s] }
+            if s.is_empty() {
+                vec![]
+            } else {
+                vec![s]
+            }
         }
         ProtoInput::Multiple(v) => v,
     }))
@@ -819,10 +800,17 @@ mod tests {
     fn test_interface_role_inference() {
         // pppoe → WAN
         let iface = InterfaceConfig {
-            mtu: None, mss_clamp_mtu: None,
-            name: "eth0".into(), label: String::new(), method: InterfaceMethod::Pppoe,
-            static_config: None, pppoe: Some(PppoeConfig::default()), dhcp: None,
-            bridge_ports: vec![], vlan_id: None, parent: None,
+            mtu: None,
+            mss_clamp_mtu: None,
+            name: "eth0".into(),
+            label: String::new(),
+            method: InterfaceMethod::Pppoe,
+            static_config: None,
+            pppoe: Some(PppoeConfig::default()),
+            dhcp: None,
+            bridge_ports: vec![],
+            vlan_id: None,
+            parent: None,
             return_route_table: None,
             return_routing: None,
         };
@@ -832,10 +820,21 @@ mod tests {
 
         // static + gateway → WAN
         let iface = InterfaceConfig {
-            mtu: None, mss_clamp_mtu: None,
-            name: "eth0".into(), label: String::new(), method: InterfaceMethod::Static,
-            static_config: Some(StaticConfig { address: "203.0.113.2/30".into(), gateway: "203.0.113.1".into(), dns: vec![] }),
-            pppoe: None, dhcp: None, bridge_ports: vec![], vlan_id: None, parent: None,
+            mtu: None,
+            mss_clamp_mtu: None,
+            name: "eth0".into(),
+            label: String::new(),
+            method: InterfaceMethod::Static,
+            static_config: Some(StaticConfig {
+                address: "203.0.113.2/30".into(),
+                gateway: "203.0.113.1".into(),
+                dns: vec![],
+            }),
+            pppoe: None,
+            dhcp: None,
+            bridge_ports: vec![],
+            vlan_id: None,
+            parent: None,
             return_route_table: None,
             return_routing: None,
         };
@@ -844,10 +843,21 @@ mod tests {
 
         // static + no gateway → LAN
         let iface = InterfaceConfig {
-            mtu: None, mss_clamp_mtu: None,
-            name: "br-lan".into(), label: String::new(), method: InterfaceMethod::Static,
-            static_config: Some(StaticConfig { address: "192.168.1.1/24".into(), gateway: String::new(), dns: vec![] }),
-            pppoe: None, dhcp: None, bridge_ports: vec![], vlan_id: None, parent: None,
+            mtu: None,
+            mss_clamp_mtu: None,
+            name: "br-lan".into(),
+            label: String::new(),
+            method: InterfaceMethod::Static,
+            static_config: Some(StaticConfig {
+                address: "192.168.1.1/24".into(),
+                gateway: String::new(),
+                dns: vec![],
+            }),
+            pppoe: None,
+            dhcp: None,
+            bridge_ports: vec![],
+            vlan_id: None,
+            parent: None,
             return_route_table: None,
             return_routing: None,
         };
@@ -856,10 +866,21 @@ mod tests {
 
         // vlan_id set → VLAN
         let iface = InterfaceConfig {
-            mtu: None, mss_clamp_mtu: None,
-            name: "vlan100".into(), label: String::new(), method: InterfaceMethod::Static,
-            static_config: Some(StaticConfig { address: "10.100.0.1/24".into(), gateway: String::new(), dns: vec![] }),
-            pppoe: None, dhcp: None, bridge_ports: vec![], vlan_id: Some(100), parent: Some("eth1".into()),
+            mtu: None,
+            mss_clamp_mtu: None,
+            name: "vlan100".into(),
+            label: String::new(),
+            method: InterfaceMethod::Static,
+            static_config: Some(StaticConfig {
+                address: "10.100.0.1/24".into(),
+                gateway: String::new(),
+                dns: vec![],
+            }),
+            pppoe: None,
+            dhcp: None,
+            bridge_ports: vec![],
+            vlan_id: Some(100),
+            parent: Some("eth1".into()),
             return_route_table: None,
             return_routing: None,
         };
@@ -873,25 +894,43 @@ mod tests {
         let ifaces = Interfaces {
             items: vec![
                 InterfaceConfig {
-                    mtu: None, mss_clamp_mtu: None,
-                    name: "eth0".into(), label: "WAN".into(), method: InterfaceMethod::Pppoe,
-                    static_config: None, pppoe: Some(PppoeConfig::default()), dhcp: None,
-                    bridge_ports: vec![], vlan_id: None, parent: None,
+                    mtu: None,
+                    mss_clamp_mtu: None,
+                    name: "eth0".into(),
+                    label: "WAN".into(),
+                    method: InterfaceMethod::Pppoe,
+                    static_config: None,
+                    pppoe: Some(PppoeConfig::default()),
+                    dhcp: None,
+                    bridge_ports: vec![],
+                    vlan_id: None,
+                    parent: None,
                     return_route_table: None,
                     return_routing: None,
                 },
                 InterfaceConfig {
-                    mtu: None, mss_clamp_mtu: None,
-                    name: "br-lan".into(), label: "LAN".into(), method: InterfaceMethod::Static,
-                    static_config: Some(StaticConfig { address: "192.168.1.1/24".into(), gateway: String::new(), dns: vec![] }),
-                    pppoe: None, dhcp: None, bridge_ports: vec![], vlan_id: None, parent: None,
+                    mtu: None,
+                    mss_clamp_mtu: None,
+                    name: "br-lan".into(),
+                    label: "LAN".into(),
+                    method: InterfaceMethod::Static,
+                    static_config: Some(StaticConfig {
+                        address: "192.168.1.1/24".into(),
+                        gateway: String::new(),
+                        dns: vec![],
+                    }),
+                    pppoe: None,
+                    dhcp: None,
+                    bridge_ports: vec![],
+                    vlan_id: None,
+                    parent: None,
                     return_route_table: None,
                     return_routing: None,
                 },
             ],
         };
-        assert!(ifaces.wan().is_some());
-        assert_eq!(ifaces.wan().unwrap().name, "eth0");
+        assert!(ifaces.items[0].is_wan());
+        assert!(!ifaces.items[1].is_wan());
         assert!(ifaces.lan().is_some());
         assert_eq!(ifaces.lan().unwrap().name, "br-lan");
     }
@@ -987,7 +1026,9 @@ interfaces:
             action: Action::Accept,
             comment: "test".into(),
             interfaces: vec![],
-            oif: None, route_via: None, preserve_internal_routes: true,
+            oif: None,
+            route_via: None,
+            preserve_internal_routes: true,
             proto: Some(vec!["tcp".into()]),
             dport: None,
             sport: None,
@@ -1000,11 +1041,16 @@ interfaces:
             mark: None,
             tproxy_port: None,
             counter: false,
-            interfaces_invert: false, saddr_invert: false, daddr_invert: false,
+            interfaces_invert: false,
+            saddr_invert: false,
+            daddr_invert: false,
             enabled: true,
         };
         let yaml = serde_yaml::to_string(&rule).unwrap();
-        assert!(!yaml.contains("interfaces:"), "empty interfaces should be omitted");
+        assert!(
+            !yaml.contains("interfaces:"),
+            "empty interfaces should be omitted"
+        );
         assert!(!yaml.contains("oif:"), "null oif should be omitted");
         assert!(!yaml.contains("dport:"), "null dport should be omitted");
         assert!(yaml.contains("comment: test"), "comment should be present");
@@ -1016,7 +1062,8 @@ interfaces:
         // String format
         let rule: FirewallRule = serde_json::from_value(serde_json::json!({
             "id": 1, "action": "accept", "interfaces": ["eth0"], "proto": "tcp", "dport": 22
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(rule.proto, Some(vec!["tcp".into()]));
 
         // Array format
@@ -1028,7 +1075,8 @@ interfaces:
         // Null
         let rule3: FirewallRule = serde_json::from_value(serde_json::json!({
             "id": 1, "action": "accept", "interfaces": ["eth0"]
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(rule3.proto, None);
     }
 }
