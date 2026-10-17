@@ -12,6 +12,12 @@ use std::collections::HashSet;
 
 /// Render nftables ruleset as JSON for `nft -j -f`.
 pub fn render(config: &Config) -> Result<String> {
+    let group_errors = crate::config::wan_groups::validate(config);
+    anyhow::ensure!(
+        group_errors.is_empty(),
+        "invalid WAN groups: {:?}",
+        group_errors
+    );
     let return_routes = wan_return_routes(config)?;
     // Resolve targets here as well as in schema validation: never silently omit a selector.
     for rule in config
@@ -23,7 +29,8 @@ pub fn render(config: &Config) -> Result<String> {
     {
         if let Some(target) = &rule.route_via {
             anyhow::ensure!(
-                return_routes.iter().any(|route| route.name == target),
+                return_routes.iter().any(|route| route.name == target)
+                    || crate::config::wan_groups::target(config, target).is_some(),
                 "unknown or disabled route_via WAN: {}",
                 target
             );
@@ -59,6 +66,7 @@ pub fn render(config: &Config) -> Result<String> {
         render_mss_clamping(config, &mut doc);
         render_tproxy_table(config, &mut doc);
         render_wan_return_rules(&return_routes, &mut doc);
+        render_group_chains(config, &return_routes, &mut doc);
         render_outbound_routes(config, &return_routes, &mut doc);
     }
     if !config.firewall.blackhole.is_empty() {
@@ -87,7 +95,7 @@ fn add_table(family: NfFamily, name: &'static str) -> NfObject<'static> {
 fn add_chain(
     family: NfFamily,
     table: &'static str,
-    name: &'static str,
+    name: impl Into<Cow<'static, str>>,
     chain_type: Option<NfChainType>,
     hook: Option<NfHook>,
     prio: Option<i32>,
@@ -96,7 +104,7 @@ fn add_chain(
     NfObject::CmdObject(NfCmd::Add(NfListObject::Chain(Chain {
         family,
         table: Cow::Borrowed(table),
-        name: Cow::Borrowed(name),
+        name: name.into(),
         newname: None,
         handle: None,
         _type: chain_type,
@@ -110,14 +118,14 @@ fn add_chain(
 fn add_rule(
     family: NfFamily,
     table: &'static str,
-    chain: &'static str,
+    chain: impl Into<Cow<'static, str>>,
     exprs: Vec<Statement<'static>>,
     comment: Option<&str>,
 ) -> NfObject<'static> {
     NfObject::CmdObject(NfCmd::Add(NfListObject::Rule(Rule {
         family,
         table: Cow::Borrowed(table),
-        chain: Cow::Borrowed(chain),
+        chain: chain.into(),
         expr: Cow::Owned(exprs),
         handle: None,
         index: None,
@@ -1165,6 +1173,111 @@ fn outbound_scope(config: &Config, preserve_internal_routes: bool) -> Vec<Statem
     stmts
 }
 
+fn render_group_chains(config: &Config, routes: &[WanReturnRoute<'_>], doc: &mut NftablesDocument) {
+    for group in &config.wan_groups {
+        for strict in [false, true] {
+            let map = crate::config::wan_groups::map_name(group.id, strict);
+            let chain = format!("{map}_select");
+            doc.objects
+                .push(NfObject::CmdObject(NfCmd::Add(NfListObject::Map(
+                    Box::new(nftables::schema::Map {
+                        family: NfFamily::INet,
+                        table: "mangle".into(),
+                        name: map.clone().into(),
+                        set_type: SetTypeValue::Single(SetType::Ipv4Addr),
+                        map: SetTypeValue::Single(SetType::Mark),
+                        elem: Some(Cow::Owned(
+                            (0..crate::config::wan_groups::BUCKETS)
+                                .map(|bucket| {
+                                    Expression::List(vec![
+                                        Expression::String(format!("0.0.0.{bucket}").into()),
+                                        Expression::Number(0),
+                                    ])
+                                })
+                                .collect(),
+                        )),
+                        comment: Some(crate::config::wan_groups::fingerprint(group).into()),
+                        ..Default::default()
+                    }),
+                ))));
+            doc.objects.push(add_chain(
+                NfFamily::INet,
+                "mangle",
+                chain.clone(),
+                None,
+                None,
+                None,
+                None,
+            ));
+            let selection =
+                Expression::Named(NamedExpression::Map(Box::new(nftables::expr::Map {
+                    // The low octet is numeric IPv4 modulo 256. Keep its
+                    // network byte order by using IPv4-typed map keys.
+                    key: Expression::BinaryOperation(Box::new(BinaryOperation::AND(
+                        Expression::Named(NamedExpression::Payload(Payload::PayloadField(
+                            PayloadField {
+                                protocol: "ip".into(),
+                                field: "saddr".into(),
+                            },
+                        ))),
+                        Expression::String("0.0.0.255".into()),
+                    ))),
+                    data: Expression::String(format!("@{map}").into()),
+                })));
+            // Select into the packet mark first. Commit the chosen constant
+            // per WAN so low conntrack bits survive without a two-register
+            // bitwise expression (unsupported on older kernels).
+            doc.objects.push(add_rule(
+                NfFamily::INet,
+                "mangle",
+                chain.clone(),
+                vec![Statement::Mangle(stmt::Mangle {
+                    key: packet_mark(),
+                    value: selection,
+                })],
+                None,
+            ));
+            for member in &group.members {
+                let route = routes
+                    .iter()
+                    .find(|route| route.name == member.interface)
+                    .expect("validated group member");
+                let mark = if strict {
+                    route.strict_mark()
+                } else {
+                    route.mark()
+                };
+                doc.objects.push(add_rule(
+                    NfFamily::INet,
+                    "mangle",
+                    chain.clone(),
+                    vec![
+                        Statement::Match(Match {
+                            left: masked(packet_mark(), WAN_MARK_MASK),
+                            right: Expression::Number(mark),
+                            op: Operator::EQ,
+                        }),
+                        Statement::Mangle(stmt::Mangle {
+                            key: ct_expression("mark"),
+                            value: with_wan_mark(ct_expression("mark"), Expression::Number(mark)),
+                        }),
+                        Statement::Return(None),
+                    ],
+                    None,
+                ));
+            }
+            // Zero buckets (and unexpected marks) must never fall through to main.
+            doc.objects.push(add_rule(
+                NfFamily::INet,
+                "mangle",
+                chain,
+                vec![Statement::Drop(None)],
+                None,
+            ));
+        }
+    }
+}
+
 fn render_outbound_routes(
     config: &Config,
     routes: &[WanReturnRoute<'_>],
@@ -1239,10 +1352,36 @@ fn render_outbound_routes(
         ));
     }
     for rule in rules {
+        let group = rule
+            .route_via
+            .as_deref()
+            .and_then(|target| crate::config::wan_groups::target(config, target));
         let route = routes
             .iter()
-            .find(|route| Some(route.name) == rule.route_via.as_deref())
-            .expect("validated WAN target");
+            .find(|route| Some(route.name) == rule.route_via.as_deref());
+        if let Some(id) = group {
+            for proto in resolve_protos(rule) {
+                let mut stmts = outbound_scope(config, rule.preserve_internal_routes);
+                stmts.extend([ct_match("state", "new", Operator::IN), wan_mark_match(0)]);
+                stmts.extend(build_rule_match_stmts(config, rule, proto.as_deref()));
+                stmts.push(Statement::Goto(stmt::JumpTarget {
+                    target: format!(
+                        "{}_select",
+                        crate::config::wan_groups::map_name(id, !rule.preserve_internal_routes)
+                    )
+                    .into(),
+                }));
+                doc.objects.push(add_rule(
+                    NfFamily::INet,
+                    "mangle",
+                    "wan_outbound",
+                    stmts,
+                    None,
+                ));
+            }
+            continue;
+        }
+        let route = route.expect("validated WAN target");
         for proto in resolve_protos(rule) {
             let mark = if rule.preserve_internal_routes {
                 route.mark()
@@ -1538,6 +1677,58 @@ mod tests {
             .filter(|rule| rule["table"] == table && rule["chain"] == chain)
             .cloned()
             .collect()
+    }
+
+    #[test]
+    fn group_maps_start_closed_and_restore_existing_wan_marks_first() {
+        let mut config = crate::config::wan_groups::test_config();
+        assert!(crate::config::validator::validate(&config).is_empty());
+        let rendered = render_json(&config);
+        let objects = rendered["nftables"].as_array().unwrap();
+        let maps: Vec<_> = objects
+            .iter()
+            .filter_map(|object| object["add"].get("map"))
+            .collect();
+        assert_eq!(maps.len(), 2);
+        for map in maps {
+            assert_eq!(map["type"], "ipv4_addr");
+            assert_eq!(map["elem"].as_array().unwrap().len(), 256);
+            assert!(map["elem"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|element| element[1] == 0));
+        }
+        let rules = rules_in_chain(&rendered, "mangle", "wan_outbound");
+        assert_eq!(
+            rules.last().unwrap()["expr"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|expr| expr.get("goto"))
+                .unwrap()["target"],
+            "wg_1_normal_select"
+        );
+        let group_rules = rules_in_chain(&rendered, "mangle", "wg_1_normal_select");
+        assert_eq!(group_rules.len(), 4);
+        assert_eq!(
+            group_rules[0]["expr"][0]["mangle"]["value"]["map"]["key"],
+            serde_json::json!({"&": [{"payload": {"protocol":"ip", "field":"saddr"}}, "0.0.0.255"]})
+        );
+        assert!(group_rules.last().unwrap()["expr"][0].get("drop").is_some());
+        config.firewall.rules.forward[0].preserve_internal_routes = false;
+        let strict = render_json(&config);
+        assert!(rules_in_chain(&strict, "mangle", "wan_outbound")
+            .last()
+            .unwrap()
+            .to_string()
+            .contains("wg_1_strict_select"));
+        config.wan_groups[0].members[0].weight = 2;
+        assert_ne!(
+            render_json(&config),
+            strict,
+            "weight changes must invalidate the installed service snapshot"
+        );
     }
 
     #[test]

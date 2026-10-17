@@ -147,7 +147,40 @@ export interface ShaperStatus {
     ingress?: ShaperStats;
   }[];
 }
+export interface WanGroup {
+  id: number;
+  name: string;
+  members: { interface: string; tier: number; weight: number }[];
+  targets: string[];
+  interval_seconds: number;
+  timeout_seconds: number;
+  failure_threshold: number;
+  recovery_threshold: number;
+  recovery_delay_seconds: number;
+}
+export interface WanGroupStatus {
+  active: boolean;
+  error?: string | null;
+  groups: {
+    id: number;
+    name: string;
+    active_tier?: number | null;
+    members: {
+      interface: string;
+      tier: number;
+      weight: number;
+      health: {
+        healthy: boolean;
+        reason: string;
+        successes: number;
+        failures: number;
+      };
+      effective_percent: number;
+    }[];
+  }[];
+}
 export interface Config {
+  wan_groups?: WanGroup[];
   singbox?: { config: string };
   shaper?: ShaperSettings;
   routing: { routes: StaticRoute[] };

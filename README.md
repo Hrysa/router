@@ -379,7 +379,8 @@ Service configs generated from `config.yml`:
 - `/etc/systemd/network/50-routerd-*.network` — systemd-networkd
 - `/etc/systemd/network/50-routerd-*.netdev` — bridges and VLANs
 - `/etc/kea/kea-dhcp4.conf` — Kea DHCPv4 (`kea-dhcp4-server`)
-- `/etc/ppp/peers/isp` and `/etc/ppp/chap-secrets` — PPPoE
+- `/etc/ppp/ip-up.d/50-routerd-wan-routing` — executable PPP IPv4 return-route hook (`0700`)
+- `/etc/ppp/peers/isp` and `/etc/ppp/chap-secrets` — PPPoE, managed through `ppp@isp.service` (requires the distribution’s `ppp@.service` template)
 - `/etc/wireguard/wg0.conf` — WireGuard
 - `/etc/sysctl.d/90-routerd.conf` — kernel network settings
 - `/etc/sing-box/config.jsonc` — raw `singbox.config` JSONC, written on explicit full Apply or `--install-singbox` setup
@@ -480,3 +481,84 @@ profile for client fairness across proxy traffic, accounting for double shaping
 if WAN profiles are also enabled. A bridge profile does not automatically cover
 all traffic switched between its member ports. A configured download rate cannot
 prevent packets from consuming capacity on the upstream link before arrival.
+
+PPPoE start/restart requests use `systemctl --no-block` for `ppp@isp`. Apply and
+manual service controls wait only for job submission, not for dialing or reconnects.
+Submission errors still fail the request; later connection failures are reported by
+service status and the PPP journal. Successful Apply does not imply PPP connectivity.
+
+### WAN groups
+
+The **WAN Groups** page combines tiered failover with weighted source-IP modulo selection
+for IPv4 forwarded traffic. Members reference configured WAN interface names
+(including the physical name for PPPoE), require WAN return routing, and have a
+positive tier and a weight from 1 to 100. The lowest tier containing healthy
+members is active. Weights apply only within that tier: weights 3 and 1 produce
+75% and 25% of the 256 source-IP slots. Selection uses `numeric_source_IP % 256`
+(the last IPv4 octet), with weighted slots interleaved across the cycle. Two equal
+WANs alternate even/odd addresses. Weight shares that do not divide 256 are
+rounded using largest remainders; three equal WANs get 86/85/85 slots. Consecutive
+addresses balance predictably, but arbitrary active addresses and bandwidth may
+still be uneven. No per-client assignment state is stored.
+Select `Group: <name>` in a forward Accept rule's **Route via WAN** control.
+Existing individual-WAN rules continue to work. Masquerade is configured separately
+for every member's egress device; PPPoE uses `ppp0`.
+
+Groups are saved in the optional top-level `wan_groups` list. For example:
+
+```yaml
+wan_groups:
+  - id: 1
+    name: Internet
+    members:
+      - { interface: wan0, tier: 1, weight: 3 }
+      - { interface: wan1, tier: 1, weight: 1 }
+      - { interface: wan2, tier: 2, weight: 1 }
+    targets: [1.1.1.1, 8.8.8.8]
+    interval_seconds: 5
+    timeout_seconds: 2
+    failure_threshold: 3
+    recovery_threshold: 2
+    recovery_delay_seconds: 10
+```
+
+A firewall rule references the group with `route_via: "group:1"`. Save and then
+Apply; saving alone never activates monitoring or changes networking. Each member
+is probed through its marked IPv4 routing table and bound egress interface; any
+one target answering ICMP makes a probe round successful. Install `ip` and `ping`
+and choose reachable ICMP targets. A round waits for each target only until one
+answers; the configured interval follows completion of the round. Failure and
+recovery thresholds plus the recovery delay prevent rapid switching.
+
+Monitoring activates after successful full Apply or nftables installation with
+`--boot`; normal startup and `--init` do not activate it. WAN addresses and policy
+routes must already exist for boot-mode probes to succeed; `--boot` does not set
+up routing. New maps block matching traffic until probes establish a healthy tier.
+When all members are unavailable, new matching connections are blocked. Existing
+connections retain their WAN even after tier changes; a failed WAN's connections
+usually need to reconnect because their public address changes. IPv6 and
+router-originated group selection are not implemented.
+
+- `GET /api/config/wan-groups`: saved group list.
+- `PUT /api/config/wan-groups`: replace the full list, save only. Group IDs are
+  nonzero and unique; remove firewall references before deleting a group.
+- `GET /api/monitor/wan-groups`: active monitoring, errors, installed group tiers,
+  member health, and installed bucket shares. These shares describe the last
+  successful map update, not measured traffic or live kernel drift.
+
+PPPoE peers carry `ipparam routerd-isp`. The managed
+`/etc/ppp/ip-up.d/50-routerd-wan-routing` hook restores `default dev ppp0` in the
+configured WAN return table after IPv4 negotiation and every reconnect. This
+avoids relying solely on routes installed before pppd finishes configuring its
+address. The hook requires the standard `/etc/ppp/ip-up` dispatcher to run
+`ip-up.d` scripts (the Debian default); a custom `ip-up.local` override must also
+run this dispatcher or hook. It only handles the tagged `ppp0` connection and
+leaves the main default route and other table prefixes unchanged. With PPP WAN
+return routing disabled, the generated hook is a no-op. A connected PPP interface
+without its dedicated-table default remains unavailable to WAN groups.
+
+Shaper profiles can move between interfaces, including to/from PPPoE. Apply
+validates the previous ownership record, removes the old owned shaping state,
+and recreates it on the selected interface. PPP interface-index changes follow
+the same cleanup path. Unjournalled IFBs and foreign queues/filters remain
+conflicts and are never adopted merely by matching a name.

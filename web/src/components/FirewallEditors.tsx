@@ -26,6 +26,12 @@ export function wanMasqueradeWarning(
   name: string,
 ): string | undefined {
   if (!config || !name) return undefined;
+  const group = config.wan_groups?.find((item) => name === `group:${item.id}`);
+  if (group) {
+    return group.members
+      .map((member) => wanMasqueradeWarning(config, member.interface))
+      .filter(Boolean).join(' ') || undefined;
+  }
   const wan = config.interfaces.items.find((iface) => iface.name === name);
   if (!wan || (wan.method === 'static' && !wan.static_config?.gateway))
     return undefined;
@@ -62,7 +68,7 @@ const ruleFields: Field[] = [
     type: 'select',
     placeholder: 'System routing',
     when: (values) => values.action === 'accept',
-    hint: 'IPv4 only. Pins new outbound connections to this WAN. Router-local and port-forwarded traffic keep normal routing. Requires WAN return routing; configure masquerade separately if needed.',
+    hint: 'IPv4 only. Pins new outbound connections to a WAN, or uses source-IP modulo slots across the active tier of a WAN group. Router-local and port-forwarded traffic keep normal routing. Requires WAN return routing; configure masquerade separately if needed.',
   },
   {
     name: 'preserve_internal_routes',
@@ -224,7 +230,11 @@ export function RuleEditor({
       )
       .map((iface) => iface.name) ?? [];
   const options = [
-    ...new Set(['', ...wans, ...(rule?.route_via ? [rule.route_via] : [])]),
+    ...new Set([
+      '', ...wans,
+      ...(config.data?.wan_groups?.map((group) => `group:${group.id}`) ?? []),
+      ...(rule?.route_via ? [rule.route_via] : []),
+    ]),
   ];
   return (
     <Editor
@@ -240,13 +250,13 @@ export function RuleEditor({
           field.name === 'route_via'
             ? {
                 ...field,
-                options: options.map((name) => ({
-                  value: name,
-                  label: interfaceDisplayName(
-                    name,
-                    config.data?.interfaces.items,
-                  ),
-                })),
+                options: options.map((name) => {
+                  const group = config.data?.wan_groups?.find((item) => name === `group:${item.id}`);
+                  return {
+                    value: name,
+                    label: group ? `Group: ${group.name}` : interfaceDisplayName(name, config.data?.interfaces.items),
+                  };
+                }),
                 warning: (values: Values) =>
                   wanMasqueradeWarning(config.data, text(values, 'route_via')),
               }

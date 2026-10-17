@@ -15,6 +15,7 @@ pub fn validate(config: &Config) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     validate_interfaces(config, &mut errors);
+    errors.extend(super::wan_groups::validate(config));
     errors.extend(super::shaper::validate(config));
     errors.extend(super::static_routes::validate(config));
     if let Err(error) = super::routing::wan_return_routes(config) {
@@ -471,12 +472,14 @@ fn validate_outbound_routes(config: &Config, errors: &mut Vec<ValidationError>) 
             };
             let problem = if chain != "forward" || rule.action != Action::Accept {
                 Some("route_via is only supported on forward Accept rules")
-            } else if !config.interfaces.items.iter().any(|interface| {
-                interface.name == *target
-                    && interface.is_wan()
-                    && interface.return_routing != Some(false)
-            }) {
-                Some("route_via must name a configured WAN with return routing enabled")
+            } else if super::wan_groups::target(config, target).is_none()
+                && !config.interfaces.items.iter().any(|interface| {
+                    interface.name == *target
+                        && interface.is_wan()
+                        && interface.return_routing != Some(false)
+                })
+            {
+                Some("route_via must name a configured WAN with return routing enabled or an existing group:<id>")
             } else if rule.oif.is_some() {
                 Some("route_via cannot be combined with an egress interface match")
             } else if rule.rate.is_some() {

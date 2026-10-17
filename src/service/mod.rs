@@ -8,3 +8,5 @@ pub mod singbox;
 pub mod wan_policy;
 
 pub mod shaper;
+
+pub mod wan_groups;

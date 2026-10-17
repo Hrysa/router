@@ -90,6 +90,7 @@ export const encoded = encodeURIComponent;
 export function normalizeConfig(config: Config): Config {
   return {
     ...config,
+    wan_groups: config.wan_groups ?? [],
     interfaces: { ...config.interfaces, items: config.interfaces.items ?? [] },
     routing: { ...config.routing, routes: config.routing?.routes ?? [] },
     shaper: { ...config.shaper, profiles: config.shaper?.profiles ?? [] },

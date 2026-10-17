@@ -20,7 +20,7 @@ impl Service {
     pub fn systemd_name(&self) -> &'static str {
         match self {
             Self::Dhcpd => "kea-dhcp4-server",
-            Self::Pppd => "pppd",
+            Self::Pppd => "ppp@isp",
             Self::Networking => "systemd-networkd",
             Self::Wireguard => "wg-quick@wg0",
             Self::SingBox => "sing-box",
@@ -111,10 +111,12 @@ impl ServiceManager {
 
     /// Start a service.
     pub async fn start(&self, service: Service) -> Result<()> {
-        let output = Command::new("systemctl")
-            .args(["start", service.systemd_name()])
-            .timeout_run(self.apply_timeout)
-            .await?;
+        let mut command = Command::new("systemctl");
+        command.args(["start", service.systemd_name()]);
+        if service == Service::Pppd {
+            command.arg("--no-block");
+        }
+        let output = command.timeout_run(self.apply_timeout).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -125,7 +127,11 @@ impl ServiceManager {
             );
         }
 
-        tracing::info!(service = service.display_name(), "service started");
+        if service == Service::Pppd {
+            tracing::info!("PPPoE start queued; dialing continues asynchronously");
+        } else {
+            tracing::info!(service = service.display_name(), "service started");
+        }
         Ok(())
     }
 
@@ -151,10 +157,12 @@ impl ServiceManager {
 
     /// Restart a service.
     pub async fn restart(&self, service: Service) -> Result<()> {
-        let output = Command::new("systemctl")
-            .args(["restart", service.systemd_name()])
-            .timeout_run(self.apply_timeout)
-            .await?;
+        let mut command = Command::new("systemctl");
+        command.args(["restart", service.systemd_name()]);
+        if service == Service::Pppd {
+            command.arg("--no-block");
+        }
+        let output = command.timeout_run(self.apply_timeout).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -163,6 +171,13 @@ impl ServiceManager {
                 service.display_name(),
                 stderr.trim()
             );
+        }
+
+        // PPP uses Type=notify and may remain activating while dialing.
+        // Successful job submission is sufficient; systemd/pppd own reconnects.
+        if service == Service::Pppd {
+            tracing::info!("PPPoE restart queued; dialing continues asynchronously");
+            return Ok(());
         }
 
         // Verify it's running after restart
@@ -317,6 +332,7 @@ mod tests {
     #[test]
     fn test_service_names() {
         assert_eq!(Service::Dhcpd.systemd_name(), "kea-dhcp4-server");
+        assert_eq!(Service::Pppd.systemd_name(), "ppp@isp");
         assert_eq!(Service::Networking.systemd_name(), "systemd-networkd");
         assert_eq!(Service::Wireguard.systemd_name(), "wg-quick@wg0");
     }

@@ -50,7 +50,7 @@ Browser tests require a real Node.js 22+ runtime for Playwright; do not force it
 
 The top bar identifies the current page. Content panels omit decorative page titles and taglines; page actions remain in a compact toolbar, with headings retained for screen readers.
 
-- **Overview:** selected-interface traffic, CPU utilization, memory, uptime (whole days and hours, without minutes), configured links, and service health. Traffic samples, live interface counters, and CPU/memory statistics refresh every two seconds. Traffic is bytes/s; physical and bridge traffic are not summed. CPU utilization uses successive cumulative-counter deltas across all cores, not the lifetime counter ratio. The CPU card waits for two valid samples and clears unavailable, unchanged, reset, or failed samples rather than displaying an invented percentage.
+- **Overview:** selected-interface traffic, CPU utilization, memory, uptime (whole days and hours, without minutes), configured links, and service health. Traffic samples, live interface counters, and CPU/memory statistics refresh every two seconds. Traffic is bytes/s; physical and bridge traffic are not summed. CPU utilization uses successive cumulative-counter deltas across all cores, not the lifetime counter ratio. CPU and memory share a history chart with two lines and a fixed 0–100% scale, retaining up to 30 minutes of samples while Overview is open; missing samples leave gaps. The CPU card waits for two valid samples and clears unavailable, unchanged, reset, or failed samples rather than displaying an invented percentage.
 - **Interfaces:** static/DHCP/PPPoE, bridges and VLANs, plus live read-only link counters. Device names are immutable on update. All interface selectors and interface summaries (firewall/NAT rules, routes, shaping, traffic charts/counters, and WAN warnings) display configured labels, falling back to device names for unlabeled or unknown interfaces (including the managed PPPoE label for `ppp0`). Saved values remain device names. Interface diagnostics and pickers retain device names as secondary details; focusing a picker's text field exposes raw device names for manual editing. Bridge members, firewall/NAT ingress, and masquerade support quick multi-selection. Custom device names remain editable, including interfaces not currently detected.
 - **WAN return routing:** enabled by default for static IPv4, DHCP and PPPoE WANs, with a stable automatic table ID derived from the interface name. The editor offers an enable toggle and optional table override (1–65535 except 253–255, distinct from TPROXY and other host tables). Automatic collisions require a manual override. Policy priorities 100/110 and upper 16 mark bits are reserved. Only one PPPoE connection (`ppp0`) is managed; IPv6 return routing is not implemented. Save and Apply remain separate operations.
 - **Routes:** persistent IPv4/IPv6 destination routes with configured interface, optional gateway, Main/WAN/custom table, metric, gateway-on-link and enablement. Individual CRUD preserves other routes; drafts stay local across refetches. Saved changes require Apply. A separate read-only view shows live kernel routes across all tables, including routes from other tools. Main controls ordinary LAN/router system routing; explicit WAN selection uses its own table. Custom tables require a matching policy rule. PPPoE routes select the physical config interface and use `ppp0`. No policy-rule editor, foreign-route import/deletion or IPv6 WAN selection is added.
@@ -108,3 +108,21 @@ byte-counter deltas, skipping missing baselines and counter resets. Saved enable
 state is labeled separately from live queues. Proxy-created WAN flows can hide
 clients, so the editor offers LAN-facing shaping; bridge-only switching is not
 automatically covered. The browser fixture intercepts both shaper endpoints.
+
+- **WAN Groups:** save tiered WAN memberships, relative weights, ICMP probe targets,
+  thresholds and recovery delay, then Apply. Live status shows the installed active
+  tier, member health/reasons and effective modulo-slot shares. Firewall Route via
+  WAN selectors include `Group: <name>` entries; group targets persist as
+  `group:<id>`. Existing connections remain pinned; all-down groups block new
+  matching traffic. IPv4 forwarding only, with separately configured masquerade.
+  Drafts survive background status refresh. Tests intercept both WAN-group API
+  endpoints and never contact a live router.
+
+PPPoE WAN-group health requires an IPv4 default in the PPP WAN table, in addition
+to successful dialing. The managed PPP IP-up hook restores that route after
+negotiation/reconnect; a connected tunnel without it remains unavailable.
+
+WAN groups select with source IPv4 modulo 256 and smoothly interleaved weighted
+slots, without hashing or per-client state. Equal pairs alternate even/odd client
+addresses. Other weight ratios are rounded to 256 slots using largest remainders.
+This balances consecutive addresses; arbitrary active IPs and bandwidth can skew.

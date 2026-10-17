@@ -42,10 +42,12 @@ import { ConfigEditors } from './pages/ConfigEditors';
 import { Backups } from './pages/Backups';
 import { Routes } from './pages/Routes';
 import { Shaper } from './pages/Shaper';
+import { WanGroups } from './pages/WanGroups';
 
 const navigation = [
   { id: 'overview', label: 'Overview', icon: Grid, group: 'WORKSPACE' },
   { id: 'interfaces', label: 'Interfaces', icon: Layers },
+  { id: 'wan-groups', label: 'WAN Groups', icon: Share2 },
   { id: 'routes', label: 'Routes', icon: Share2 },
   { id: 'shaper', label: 'Traffic shaping', icon: Activity },
   { id: 'firewall', label: 'Firewall', icon: Shield },
@@ -336,6 +338,7 @@ function Shell({
         <main id="main-content" tabIndex={-1} key={route}>
           {route === 'overview' && <Overview />}
           {route === 'interfaces' && <Interfaces />}
+          {route === 'wan-groups' && <WanGroups />}
           {route === 'routes' && <Routes />}
           {route === 'shaper' && <Shaper />}
           {route === 'firewall' && <Firewall />}

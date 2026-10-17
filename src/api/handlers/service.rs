@@ -54,7 +54,7 @@ pub async fn start_service(
     let manager = ServiceManager::new();
     manager.start(service).await?;
     Ok(Json(
-        json!({"status": "ok", "message": format!("{} started", service.display_name())}),
+        json!({"status": "ok", "message": if service == Service::Pppd { "PPPoE start queued; dialing continues asynchronously".to_string() } else { format!("{} started", service.display_name()) }}),
     ))
 }
 
@@ -82,14 +82,14 @@ pub async fn restart_service(
     let manager = ServiceManager::new();
     manager.restart(service).await?;
     Ok(Json(
-        json!({"status": "ok", "message": format!("{} restarted", service.display_name())}),
+        json!({"status": "ok", "message": if service == Service::Pppd { "PPPoE restart queued; dialing continues asynchronously".to_string() } else { format!("{} restarted", service.display_name()) }}),
     ))
 }
 
 fn parse_service(name: &str) -> Result<Service, ApiError> {
     match name.to_lowercase().as_str() {
         "dhcpd" | "kea-dhcp4" | "kea-dhcp4-server" | "dhcp" => Ok(Service::Dhcpd),
-        "pppd" | "ppp" | "pppoe" => Ok(Service::Pppd),
+        "pppd" | "ppp" | "pppoe" | "ppp@isp" => Ok(Service::Pppd),
         "networking" | "network" | "systemd-networkd" => Ok(Service::Networking),
         "wireguard" | "wg" | "wg0" | "wg-quick@wg0" => Ok(Service::Wireguard),
         "sing-box" | "singbox" => Ok(Service::SingBox),
@@ -101,6 +101,13 @@ fn parse_service(name: &str) -> Result<Service, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_pppoe_aliases() {
+        for name in ["pppd", "ppp", "pppoe", "ppp@isp"] {
+            assert_eq!(parse_service(name).unwrap(), Service::Pppd);
+        }
+    }
 
     #[test]
     fn accepts_every_name_returned_by_service_listing() {

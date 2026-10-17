@@ -8,6 +8,8 @@ pub struct Config {
     pub interfaces: Interfaces,
     #[serde(default)]
     pub routing: Routing,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wan_groups: Vec<super::wan_groups::WanGroup>,
     #[serde(default)]
     pub shaper: super::shaper::Shaper,
     #[serde(default)]

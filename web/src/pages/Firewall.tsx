@@ -63,7 +63,7 @@ export function Firewall() {
   const [editing, setEditing] = useState<Editing | null>(null);
   const firewall = config.data?.firewall;
   const interfaceName = (name: string) =>
-    interfaceDisplayName(name, config.data?.interfaces.items);
+    config.data?.wan_groups?.find((group) => name === `group:${group.id}`)?.name ?? interfaceDisplayName(name, config.data?.interfaces.items);
   const missingMasquerade =
     firewall?.rules.forward.filter(
       (rule) =>

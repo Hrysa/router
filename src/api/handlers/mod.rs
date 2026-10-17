@@ -7,3 +7,5 @@ pub mod service;
 pub mod status;
 
 pub mod shaper;
+
+pub mod wan_groups;

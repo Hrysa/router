@@ -107,7 +107,9 @@ pub async fn boot_nftables(
     config: &Config,
     service_manager: &ServiceManager,
 ) -> Result<ApplyResult> {
-    boot_nftables_with(config, service_manager).await
+    let result = boot_nftables_with(config, service_manager).await?;
+    crate::service::wan_groups::activate(config, true).await;
+    Ok(result)
 }
 
 async fn boot_nftables_with(
@@ -220,8 +222,9 @@ async fn apply_with_mode(
         let mut changes = detect_rendered_changes(&rendered, config, nftables, singbox);
         let previous = render_all(prev_config)?;
         changes.dhcpd |= rendered.kea_dhcp4 != previous.kea_dhcp4;
-        changes.ppp |=
-            rendered.ppp_peers != previous.ppp_peers || rendered.ppp_chap != previous.ppp_chap;
+        changes.ppp |= rendered.ppp_peers != previous.ppp_peers
+            || rendered.ppp_chap != previous.ppp_chap
+            || rendered.ppp_ip_up != previous.ppp_ip_up;
         changes.interfaces |= rendered.interfaces != previous.interfaces;
         changes.wireguard |= rendered.wireguard != previous.wireguard;
         changes.sysctl |= rendered.sysctl != previous.sysctl;
@@ -231,6 +234,9 @@ async fn apply_with_mode(
 
     tracing::debug!(?changeset, "detected service config changes");
 
+    if mode == ApplyMode::Full {
+        crate::service::wan_groups::suspend().await;
+    }
     crate::service::shaper::suspend().await;
     crate::service::shaper::preflight_config(config).await?;
 
@@ -256,6 +262,7 @@ async fn apply_with_mode(
     crate::service::shaper::activate(config).await;
 
     if let Some(applied_services) = applied_services {
+        crate::service::wan_groups::activate(config, changeset.nftables).await;
         attempt.commit(applied_services);
     }
 
@@ -281,7 +288,11 @@ fn detect_rendered_changes(
 ) -> ChangeSet {
     let dhcpd = file_changed("/etc/kea/kea-dhcp4.conf", &rendered.kea_dhcp4);
     let ppp = file_changed("/etc/ppp/peers/isp", &rendered.ppp_peers)
-        || file_changed("/etc/ppp/chap-secrets", &rendered.ppp_chap);
+        || file_changed("/etc/ppp/chap-secrets", &rendered.ppp_chap)
+        || file_changed(
+            "/etc/ppp/ip-up.d/50-routerd-wan-routing",
+            &rendered.ppp_ip_up,
+        );
     let wireguard =
         wireguard_enabled(config) && file_changed("/etc/wireguard/wg0.conf", &rendered.wireguard);
     let sysctl = file_changed("/etc/sysctl.d/90-routerd.conf", &rendered.sysctl);
@@ -347,6 +358,7 @@ fn render_all(config: &Config) -> Result<RenderedConfigs> {
         kea_dhcp4: renderer::kea::render(config)?,
         ppp_peers: renderer::ppp::render(config)?,
         ppp_chap: renderer::ppp::render_chap_secrets(config)?,
+        ppp_ip_up: renderer::ppp::render_ip_up(config)?,
         interfaces: renderer::interfaces::render(config)?,
         wireguard: renderer::wireguard::render(config)?,
         sysctl: renderer::sysctl::render(config)?,
@@ -360,6 +372,7 @@ struct RenderedConfigs {
     kea_dhcp4: String,
     ppp_peers: String,
     ppp_chap: String,
+    ppp_ip_up: String,
     interfaces: Vec<NetworkFile>,
     wireguard: String,
     sysctl: String,
@@ -429,6 +442,12 @@ async fn write_changed_configs(
         std::fs::create_dir_all("/etc/ppp/peers")?;
         atomic_write_with_mode("/etc/ppp/peers/isp", &rendered.ppp_peers, Some(0o600))?;
         atomic_write_with_mode("/etc/ppp/chap-secrets", &rendered.ppp_chap, Some(0o600))?;
+        std::fs::create_dir_all("/etc/ppp/ip-up.d")?;
+        atomic_write_with_mode(
+            "/etc/ppp/ip-up.d/50-routerd-wan-routing",
+            &rendered.ppp_ip_up,
+            Some(0o700),
+        )?;
     }
 
     if changeset.interfaces {

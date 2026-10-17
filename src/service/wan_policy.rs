@@ -119,12 +119,13 @@ fn number(value: &Value) -> Option<u32> {
 }
 
 fn policies(config: &Config) -> Result<Vec<Policy>> {
-    if !config
-        .firewall
-        .rules
-        .forward
-        .iter()
-        .any(|rule| rule.enabled && rule.action == Action::Accept && rule.route_via.is_some())
+    if config.wan_groups.is_empty()
+        && !config
+            .firewall
+            .rules
+            .forward
+            .iter()
+            .any(|rule| rule.enabled && rule.action == Action::Accept && rule.route_via.is_some())
     {
         return Ok(Vec::new());
     }

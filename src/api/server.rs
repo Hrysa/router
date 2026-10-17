@@ -44,6 +44,7 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
     };
 
     crate::service::shaper::start_background(state.config.clone());
+    crate::service::wan_groups::start_background(state.config.clone());
 
     // Public routes: login and static SPA assets (login page must be reachable).
     let public_routes = Router::new()
@@ -81,6 +82,11 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
             get(handlers::shaper::get_shaper).put(handlers::shaper::replace_shaper),
         )
         .route("/api/monitor/shaper", get(handlers::shaper::status))
+        .route(
+            "/api/config/wan-groups",
+            get(handlers::wan_groups::get_groups).put(handlers::wan_groups::replace_groups),
+        )
+        .route("/api/monitor/wan-groups", get(handlers::wan_groups::status))
         // System routing
         .route(
             "/api/config/routing",

@@ -7,22 +7,25 @@ export function TrafficChart({
   received,
   transmitted,
   label,
+  percentage = false,
 }: {
   timestamps: number[];
   received: number[];
   transmitted?: number[];
   label: string;
+  percentage?: boolean;
 }) {
   const id = useId().replaceAll(':', '');
   const samples = timestamps.length;
   if (samples < 2)
     return (
       <Empty
-        title="Collecting traffic samples"
+        title={percentage ? "Collecting usage samples" : "Collecting traffic samples"}
         description="The router collects a sample every two seconds. History appears after two samples."
       />
     );
-  const maximum = Math.max(
+  const format = (value: number) => percentage ? `${value.toFixed(0)}%` : bytes(value, true);
+  const maximum = percentage ? 100 : Math.max(
     1,
     ...received.filter(Number.isFinite),
     ...(transmitted ?? []).filter(Number.isFinite),
@@ -35,7 +38,7 @@ export function TrafficChart({
     timestamps
       .map(
         (timestamp, index) =>
-          `${index ? 'L' : 'M'}${(((timestamp - first) / span) * width).toFixed(2)},${(height - (Math.max(0, Number.isFinite(values[index]) ? values[index] : 0) / maximum) * (height - 12)).toFixed(2)}`,
+          !Number.isFinite(values[index]) ? '' : `${index && Number.isFinite(values[index - 1]) ? 'L' : 'M'}${(((timestamp - first) / span) * width).toFixed(2)},${(height - (Math.max(0, Number.isFinite(values[index]) ? values[index] : 0) / maximum) * (percentage ? height : height - 12)).toFixed(2)}`,
       )
       .join(' ');
   const area = (values: number[]) =>
@@ -49,12 +52,20 @@ export function TrafficChart({
     <div
       className="traffic-chart"
       role="img"
-      aria-label={`${label}. Receive maximum ${bytes(Math.max(...received), true)}${transmitted ? `, transmit maximum ${bytes(Math.max(...transmitted), true)}` : ''}.`}
+      aria-label={percentage ? `${label}. Scale 0 to 100 percent.` : `${label}. Receive maximum ${bytes(Math.max(...received), true)}${transmitted ? `, transmit maximum ${bytes(Math.max(...transmitted), true)}` : ''}.`}
     >
       <div className="chart-scale">
-        <span>{bytes(maximum, true)}</span>
-        <span>{bytes(maximum / 2, true)}</span>
-        <span>0</span>
+        {percentage ? (
+          [100, 80, 60, 40, 20, 0].map((value) => (
+            <span key={value}>{format(value)}</span>
+          ))
+        ) : (
+          <>
+            <span>{format(maximum)}</span>
+            <span>{format(maximum / 2)}</span>
+            <span>0</span>
+          </>
+        )}
       </div>
       <div className="chart-plot">
         <svg
@@ -68,17 +79,17 @@ export function TrafficChart({
               <stop offset="100%" stopColor="var(--accent)" stopOpacity=".01" />
             </linearGradient>
           </defs>
-          {[0, 1, 2, 3, 4].map((step) => (
+          {Array.from({ length: percentage ? 6 : 5 }, (_, step) => (
             <line
               key={step}
               x1="0"
               x2={width}
-              y1={(height * step) / 4}
-              y2={(height * step) / 4}
+              y1={(height * step) / (percentage ? 5 : 4)}
+              y2={(height * step) / (percentage ? 5 : 4)}
               className="chart-grid"
             />
           ))}
-          <path d={area(received)} fill={`url(#${id}-rx)`} />
+          {received.every(Number.isFinite) && <path d={area(received)} fill={`url(#${id}-rx)`} />}
           <path d={path(received)} className="chart-line chart-rx" />
           {transmitted && (
             <path d={path(transmitted)} className="chart-line chart-tx" />

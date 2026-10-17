@@ -34,11 +34,20 @@ export function Overview() {
   const status = useStatus();
   const previousCpu = useRef<SystemStats['cpu'] | undefined>(undefined);
   const [cpu, setCpu] = useState<number | undefined>(undefined);
+  const [usageHistory, setUsageHistory] = useState<{ time: number; cpu: number; memory: number }[]>([]);
+  const memory = stats.isError ? undefined : stats.data?.memory;
   const cpuCounters = stats.isError ? undefined : stats.data?.cpu;
   useEffect(() => {
-    setCpu(cpuUsage(previousCpu.current, cpuCounters));
+    const usage = cpuUsage(previousCpu.current, cpuCounters);
+    setCpu(usage);
+    if (!stats.dataUpdatedAt && !stats.isError) return;
+    const time = Date.now() / 1000;
+    setUsageHistory((history) => [
+      ...history.filter((sample) => sample.time > time - 1800),
+      { time, cpu: usage ?? NaN, memory: memory?.usage_percent ?? NaN },
+    ].slice(-901));
     previousCpu.current = cpuCounters;
-  }, [cpuCounters, stats.dataUpdatedAt]);
+  }, [cpuCounters, memory, stats.dataUpdatedAt, stats.isError]);
   const [selection, setSelection] = useState('');
   const interfaces = Array.from(
     new Set([
@@ -54,7 +63,6 @@ export function Overview() {
     : (wan ?? interfaces[0] ?? '');
   const displayName = interfaceDisplayName(name, config.data?.interfaces.items);
   const traffic = metrics.data?.interfaces[name];
-  const memory = stats.data?.memory;
   const activeServices = services.data?.services.filter(
     (service) => service.active,
   ).length;
@@ -204,6 +212,29 @@ export function Overview() {
           </span>
           <span className="subtle">
             One interface at a time. No bridge double-counting.
+          </span>
+        </div>
+      </Card>
+      <Card
+        title="CPU and memory usage"
+        subtitle="Usage percentage · up to 30 minutes while Overview is open"
+        className="traffic-card"
+      >
+        <TrafficChart
+          timestamps={usageHistory.map((sample) => sample.time)}
+          received={usageHistory.map((sample) => sample.cpu)}
+          transmitted={usageHistory.map((sample) => sample.memory)}
+          label="CPU and memory usage"
+          percentage
+        />
+        <div className="chart-legend">
+          <span>
+            <i className="chart-key rx" />
+            CPU
+          </span>
+          <span>
+            <i className="chart-key tx" />
+            Memory
           </span>
         </div>
       </Card>

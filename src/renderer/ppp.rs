@@ -24,6 +24,7 @@ pub fn render(config: &Config) -> Result<String> {
     out.push_str("plugin pppoe.so\n");
     out.push_str(&format!("{}\n", wan.name));
     out.push_str("ifname ppp0\n");
+    out.push_str("ipparam routerd-isp\n");
     out.push_str(&format!("user \"{}\"\n", escape_quoted(&pppoe.username)));
     out.push_str(&format!(
         "password \"{}\"\n",
@@ -47,7 +48,6 @@ pub fn render(config: &Config) -> Result<String> {
 
     out.push_str("persist\n");
     out.push_str("maxfail 0\n");
-    out.push_str("connect /bin/true\n");
     out.push_str("noaccomp\n");
     out.push_str("nodeflate\n");
     out.push_str("novj\n");
@@ -84,6 +84,30 @@ pub fn render_chap_secrets(config: &Config) -> Result<String> {
     Ok(out)
 }
 
+/// Run only after IPCP installs the IPv4 address. pppd address setup can
+/// remove a route installed earlier by networkd; its ip-up dispatcher reruns
+/// this hook after every reconnect. Other PPP connections are left untouched.
+pub fn render_ip_up(config: &Config) -> Result<String> {
+    render_ip_up_command(config, "ip")
+}
+
+fn render_ip_up_command(config: &Config, command: &str) -> Result<String> {
+    let routes = crate::config::routing::wan_return_routes(config)?;
+    let route = routes
+        .iter()
+        .find(|route| matches!(route.kind, crate::config::routing::WanRouteKind::Pppoe));
+    let Some(route) = route else {
+        return Ok(
+            "#!/bin/sh\n# Managed by routerd: PPP WAN return routing disabled.\nexit 0\n".into(),
+        );
+    };
+    let command = command.replace('\'', "'\"'\"'");
+    Ok(format!(
+        "#!/bin/sh\n# Managed by routerd: restore the dedicated IPv4 WAN default after IPCP.\nset -eu\n[ \"${{PPP_IFACE:-${{1:-}}}}\" = ppp0 ] || exit 0\n[ \"${{PPP_IPPARAM:-${{6:-}}}}\" = routerd-isp ] || exit 0\nexec '{command}' -4 route replace default dev ppp0 scope link proto static table {}\n",
+        route.table
+    ))
+}
+
 fn escape_quoted(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -91,6 +115,120 @@ fn escape_quoted(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ip_up_hook_is_scoped_to_managed_ppp_and_tracks_table_changes() {
+        let mut config = config_with_wan_pppoe(PppoeConfig {
+            username: "subscriber".into(),
+            ..Default::default()
+        });
+        config.interfaces.items[0].return_route_table = Some(200);
+        let directory = crate::service::files::StagedDirectory::new().unwrap();
+        let capture = directory.path().join("arguments");
+        let fake = directory.path().join("ip");
+        crate::service::files::atomic_write(
+            &fake,
+            b"#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CAPTURE\"\n",
+            0o700,
+        )
+        .unwrap();
+        let script = directory.path().join("ip-up");
+        crate::service::files::atomic_write(
+            &script,
+            render_ip_up_command(&config, fake.to_str().unwrap())
+                .unwrap()
+                .as_bytes(),
+            0o700,
+        )
+        .unwrap();
+        let invoke = |interface: &str, tag: &str| {
+            std::process::Command::new("/bin/sh")
+                .arg(&script)
+                .env("PPP_IFACE", interface)
+                .env("PPP_IPPARAM", tag)
+                .env("CAPTURE", &capture)
+                .status()
+                .unwrap()
+        };
+        assert!(invoke("ppp1", "routerd-isp").success());
+        assert!(invoke("ppp0", "unrelated").success());
+        assert!(!capture.exists());
+        assert!(invoke("ppp0", "routerd-isp").success());
+        assert_eq!(
+            std::fs::read_to_string(&capture)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "-4", "route", "replace", "default", "dev", "ppp0", "scope", "link", "proto",
+                "static", "table", "200"
+            ]
+        );
+        assert!(render(&config).unwrap().contains("ipparam routerd-isp"));
+        config.interfaces.items[0].return_route_table = Some(201);
+        assert!(render_ip_up(&config).unwrap().contains("table 201"));
+        config.interfaces.items[0].return_routing = Some(false);
+        assert!(!render_ip_up(&config).unwrap().contains("route replace"));
+        assert!(!render_ip_up(&Config::default())
+            .unwrap()
+            .contains("route replace"));
+    }
+
+    #[test]
+    #[ignore = "requires root/CAP_SYS_ADMIN, ip and python3; creates its own isolated network namespace"]
+    fn native_ip_up_repairs_ppp_default_after_connect_and_reconnect() {
+        let mut config = config_with_wan_pppoe(PppoeConfig {
+            username: "subscriber".into(),
+            ..Default::default()
+        });
+        config.interfaces.items[0].return_route_table = Some(200);
+        let directory = crate::service::files::StagedDirectory::new().unwrap();
+        let script = directory.path().join("50-routerd-wan-routing");
+        crate::service::files::atomic_write(
+            &script,
+            render_ip_up(&config).unwrap().as_bytes(),
+            0o700,
+        )
+        .unwrap();
+        let python = r#"
+import json, os, subprocess, sys
+
+def run(*args):
+    result = subprocess.run(args, text=True, capture_output=True)
+    assert result.returncode == 0, (args, result.stderr)
+    return result.stdout
+run('ip', 'link', 'add', 'ppp0', 'type', 'dummy')
+run('ip', 'link', 'set', 'ppp0', 'up')
+run('ip', 'addr', 'add', '198.18.0.2', 'peer', '198.18.0.1', 'dev', 'ppp0')
+run('ip', 'link', 'add', 'otherwan', 'type', 'dummy')
+run('ip', 'link', 'set', 'otherwan', 'up')
+run('ip', 'route', 'add', 'default', 'dev', 'otherwan')
+run('ip', 'route', 'add', '203.0.113.0/24', 'dev', 'otherwan', 'table', '200')
+main = run('ip', '-j', '-4', 'route', 'show', 'table', 'main')
+os.environ.update(PPP_IFACE='ppp0', PPP_IPPARAM='routerd-isp')
+for _ in range(2):
+    run('/bin/sh', sys.argv[1])
+    default = json.loads(run('ip', '-j', '-4', 'route', 'show', 'table', '200', 'default'))
+    assert len(default) == 1 and default[0]['dev'] == 'ppp0', default
+    assert run('ip', '-j', '-4', 'route', 'show', 'table', 'main') == main
+    assert len(json.loads(run('ip', '-j', '-4', 'route', 'show', 'table', '200', '203.0.113.0/24'))) == 1
+    run('ip', '-4', 'route', 'del', 'default', 'dev', 'ppp0', 'table', '200')
+os.environ['PPP_IPPARAM'] = 'another-peer'
+run('/bin/sh', sys.argv[1])
+assert json.loads(run('ip', '-j', '-4', 'route', 'show', 'table', '200', 'default')) == []
+"#;
+        let output = std::process::Command::new("unshare")
+            .args(["--net", "python3", "-c", python])
+            .arg(&script)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn quotes_and_backslashes_in_credentials_are_escaped() {
@@ -159,6 +297,9 @@ mod tests {
 
         let output = render(&config).unwrap();
         assert!(output.contains("plugin pppoe.so"));
+        // PPPoE establishes its own channel; serial connect scripts are unsupported
+        // by pppd builds without serial support (including Debian 13).
+        assert!(!output.lines().any(|line| line.starts_with("connect ")));
         assert!(output.contains("user \"user@isp\""));
         assert!(output.contains("password \"secret123\""));
         assert!(output.contains("mtu 1492"));

@@ -62,3 +62,63 @@ This is a source-level review with automated regression checks, not a penetratio
 - `/api/monitor/traffic` and `/api/monitor/connections` remain placeholders; `src/monitor/` contains stubs. Use the implemented interface/firewall metrics endpoints. `monitoring.vnstat` is not automatically reconciled during apply.
 - Although repository guidance describes `web/dist/` as committed, this checkout ignores it in both root and frontend Git rules and has no tracked dist assets. Build it locally before compiling Rust; ignore rules are left unchanged.
 - Live privileged apply, distro-specific service units, and native nftables/Kea integration still need verification on a disposable router or isolated network namespace. Unit tests do not establish those deployment guarantees.
+
+### 2026-10-17 — WAN groups
+
+Added IPv4 forwarded-traffic WAN groups with tiered fallback, weighted source-IP
+hashing, asynchronous ICMP health checks, saved-only API editing and a WAN Groups
+page. Health-driven nft map updates preserve established WAN marks and expose
+last-installed shares. Limits: 32 groups, 16 members per group, 64 total member
+entries, 256 buckets per group. No IPv6/router-originated group selection, seamless
+public-IP session migration, connection deletion, or external kernel-drift repair.
+ICMP filtering can classify an otherwise usable WAN as down; choose probe targets
+accordingly. An Apply failure after runtime suspension leaves monitoring suspended until a successful retry.
+Boot activation relies on pre-existing WAN routing; it does not install routes.
+Validation: Rust and Bun unit suites, TypeScript checks, production frontend build,
+Clippy and formatting passed. A real-kernel regression in fresh network namespaces
+verified weighted hashing, connection stickiness, both routing modes, atomic map
+updates, all-down blocking and no main-route leakage. Mocked browser coverage was
+added; execution was unavailable because Chromium downloads stalled/timed out.
+No live configuration Apply or service installation was performed.
+
+### 2026-10-17 — PPP WAN-group route lifecycle
+
+Read-only diagnostics found connected `ppp0` with an IPv4 address and an empty
+configured WAN table. Added a tagged, fixed-path PPP IP-up hook to restore the
+dedicated-table default after IPCP and each reconnect. The standard distribution
+PPP ip-up dispatcher must run `ip-up.d`; custom local dispatcher overrides must
+invoke the hook. Hook scope and disabled behavior are unit-tested; a real-kernel
+namespace test verifies route recreation and preservation of the main default and
+unrelated routes. No live PPP restart, hook installation or Apply was performed.
+
+### 2026-10-17 — Client affinity for WAN groups
+
+Changed selection from symmetric per-flow hashing to `jhash ip saddr`, seeded
+with the stable group ID. Ports and destinations no longer affect the WAN chosen
+for a client's new connections while the active bucket map is unchanged. Weights
+now describe approximate client-IP shares. Existing connection marks survive;
+health, tier, weight or membership changes can move subsequent new connections.
+The isolated kernel regression passed for both routing modes, checking affinity
+across 100 varied connections, distribution across 400 source addresses, existing
+flow pinning, all-down blocking and no main-table leakage. Rust/Bun unit suites,
+frontend checks/build, Clippy and formatting passed; no live Apply was performed.
+
+### 2026-10-17 — Stateless modulo selection
+
+Replaced source-IP hashing with low-octet modulo-256 selection in IPv4-typed
+slot maps, without per-client assignments. Largest-remainder apportionment and
+smooth interleaving make weighted slot allocation deterministic and closest to
+configured shares. Equal pairs alternate even/odd addresses; three equal members
+receive 86/85/85 slots. This balances consecutive addresses, not arbitrary active
+IP sets or traffic volume. Existing connections keep their marks across policy
+changes. Native packet checks cover exact 200/200 and 300/100 splits across 400
+consecutive clients, subnet boundaries, per-client affinity and failover.
+
+### 2026-10-17 — Shaper profile migration and PPP reconnects
+
+Fixed preflight incorrectly rejecting a journalled IFB when its profile moves to
+a different device or PPP returns with a new link index. The old record must
+still validate exact IFB identity and foreign-qdisc/filter protections before
+cleanup/recreation. A namespace regression verified physical-WAN to PPP migration,
+PPP link recreation, rejection without a journal, rejection with a foreign old
+filter, and final cleanup. Live ownership state and shaping were left unchanged.

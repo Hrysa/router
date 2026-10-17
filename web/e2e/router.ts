@@ -8,6 +8,7 @@ import type {
   Reservation,
   StaticRoute,
   ShaperSettings,
+  WanGroup,
 } from '../src/lib/types';
 
 export async function mockRouter(
@@ -149,6 +150,8 @@ export async function mockRouter(
             !state.applied ||
             state.applied.config !== JSON.stringify(state.config),
         });
+      if (path === '/config/wan-groups') return reply(state.config.wan_groups ?? []);
+      if (path === '/monitor/wan-groups') return reply({ active: false, groups: [] });
       if (path === '/config/shaper')
         return reply(state.config.shaper ?? { profiles: [] });
       if (path === '/monitor/shaper')
@@ -340,6 +343,10 @@ export async function mockRouter(
       state.config.dhcp.static_leases = state.config.dhcp.static_leases.filter(
         (lease) => lease.mac !== path.split('/').at(-1),
       );
+      return reply({ status: 'ok' });
+    }
+    if (path === '/config/wan-groups' && method === 'PUT') {
+      state.config.wan_groups = body as WanGroup[];
       return reply({ status: 'ok' });
     }
     if (path === '/config/shaper' && method === 'PUT') {

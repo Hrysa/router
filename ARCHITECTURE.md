@@ -72,7 +72,7 @@ External systems and data sources that routerd manages.
 |-----------|--------------|-------------|-----------------|
 | DHCP | `kea-dhcp4-server` | `/etc/kea/kea-dhcp4.conf` | Any `dhcp.pools[].enabled` |
 | VPN | `wg-quick@wg0` | `/etc/wireguard/wg0.conf` | `vpn.wireguard.enabled` |
-| PPPoE | `pppd` | `/etc/ppp/peers/isp`, `/etc/ppp/chap-secrets` | WAN `interfaces.items[].method: pppoe` with nonempty username |
+| PPPoE | `ppp@isp` | `/etc/ppp/peers/isp`, `/etc/ppp/chap-secrets`, `/etc/ppp/ip-up.d/50-routerd-wan-routing` | WAN `interfaces.items[].method: pppoe` with nonempty username |
 | Proxy | `sing-box` | `/etc/sing-box/config.jsonc` from `singbox.config` | Full Apply only, when `singbox` exists: start if inactive; restart on change or first/forced Apply |
 
 Disabled DHCP/PPP/WireGuard services are stopped if active, not started from stale on-disk configuration. `vnstat` has manual API service controls, but `monitoring.vnstat` is not wired into the apply pipeline.
@@ -479,7 +479,7 @@ IDs, directions, and IFB identities; IFB aliases and redirect action cookies add
 kernel identity checks. Preflight checks all intended changes and cleanup
 records before mutation. Only implicit default qdiscs or previously owned queues
 may be replaced. Custom roots, custom multi-queue children, pre-existing ingress
-hooks/filters, and IFB name collisions are conflicts. Cleanup rechecks ownership,
+hooks/filters, and unjournalled IFB name collisions are conflicts. Cleanup rechecks ownership,
 never flushes device filters globally, and will refuse ambiguous administrator
 changes. If ownership metadata is lost or a crash leaves an untagged IFB, manual
 review may be required; unrelated traffic control is never adopted merely by name.
@@ -488,3 +488,72 @@ The ignored native shaper test always enters an isolated network namespace. It
 exercises CAKE/IFB creation, cookies and aliases, foreign-filter protection,
 cleanup, reconnects, two source IPs behind actual SNAT with four versus one flow,
 download reverse-NAT host fairness, spare-capacity reuse, and latency under load.
+
+PPPoE start/restart requests use `systemctl --no-block` for `ppp@isp`. Apply and
+manual service controls wait only for job submission, not for dialing or reconnects.
+Submission errors still fail the request; later connection failures are reported by
+service status and the PPP journal. Successful Apply does not imply PPP connectivity.
+
+### WAN-group health and selection
+
+`src/config/wan_groups.rs` defines the optional `wan_groups` list and validates
+members against the existing IPv4 WAN return-routing model. Groups use stable
+numeric IDs; firewall `route_via` values prefixed with `group:` select a group.
+The existing per-WAN marks, internal-route preservation, strict routing guards,
+TPROXY exclusions, inbound symmetry, and NAT behavior are retained.
+
+`src/renderer/nftables.rs` creates two owned maps per group in `inet mangle`:
+`wg_<id>_normal` and `wg_<id>_strict`. Each has 256 source-IP slots and initially maps
+to zero. The key is `ip saddr & 0.0.0.255`, equivalent to numeric IPv4 modulo
+256, stored in an `ipv4_addr : mark` map to preserve network byte order.
+Ports and destinations do not
+affect selection, so one client uses one WAN while membership is unchanged. A group chain commits its selected WAN's constant upper-bit mark,
+preserving low conntrack bits. Zero or unknown selections drop immediately.
+Connection restoration precedes new selection, so membership/health/tier changes
+do not migrate existing flows. Group-policy fingerprints in map comments ensure
+weight, tier, and probe-policy edits invalidate full-Apply content snapshots.
+
+`src/service/wan_groups.rs` runs asynchronous, bounded ICMP probes. Before each
+probe it verifies a marked FIB lookup resolves through the member's routing table,
+interface, and IPv4 source address; ping uses that strict mark and binds to the
+egress device. Missing routes/addresses (including a dialing PPP tunnel) count as
+failed rounds. A member becomes healthy only after consecutive successes and the
+recovery delay; consecutive failed rounds withdraw it. Targets are tried until any
+answers. Largest-remainder apportionment rounds weights to 256 slots, then smooth weighted
+interleaving spreads the slots across the cycle using only healthy members in the
+lowest tier. Equal pairs alternate even/odd client addresses.
+Shares are quantized to 256 slots. Consecutive source addresses balance evenly
+for equal pairs; arbitrary address populations may be skewed. No per-client
+assignment table is maintained.
+
+The runtime captures installed configuration, never saved drafts. Only successful
+full Apply or `--boot` nftables installation activates it; normal startup and
+`--init` do not. Boot-mode probing relies on existing WAN policy rules and routes.
+Full Apply suspends it before runtime changes; generation checks discard probes
+that finish after a suspend or reconfiguration. Slow probes hold neither the
+operation lock nor the runtime mutex. Publication takes the operation lock and
+updates only the group's maps with one atomic nft JSON batch (flush map plus add
+elements), leaving other rules/counters untouched. Update errors retain the last
+published map snapshot, surface in status, and are retried. A full Apply that fails after suspension
+leaves monitoring suspended until a successful retry. This does not make Apply
+transactional. Runtime status reports installed bucket shares separately from
+observed health; it does not inspect external kernel drift.
+
+PPP return defaults are additionally rendered as a fixed managed `ip-up.d` hook
+(`0700`). Its content participates in PPP file comparison against disk and the
+previous successful configuration. Normal startup/full Apply atomically install
+it before requesting a PPP start/restart; boot/init skip installation. The peer's
+`ipparam routerd-isp` scopes execution to the managed `ppp0` connection. The hook
+replaces only the configured table's interface default (`proto static`, scope
+link), after IPCP address setup and on reconnect, retaining other prefixes and the
+main table. It becomes a no-op when PPP return routing is disabled. This relies
+on the system PPP ip-up dispatcher; it does not replace administrator dispatchers
+or add a new daemon. PPP dialing remains asynchronous. Group health still checks
+for a usable dedicated-table route and a successful WAN-bound ICMP probe.
+
+Moving a saved shaper profile to another interface, or reconnecting PPP with a new
+link index, can retain the old profile IFB until reconciliation. Preflight accepts
+that name only when an ingress ownership journal record with the same profile ID
+and IFB name exists, after validating the recorded IFB identity, qdiscs and source
+filters. It then removes the obsolete owned state before creating the replacement.
+A matching name or alias without the journal remains insufficient for adoption.

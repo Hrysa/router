@@ -250,15 +250,22 @@ fn preflight(
                 egress: false,
                 ingress: false,
             };
+            // A profile can move to another device (or a new PPP link index).
+            // Its old IFB is still owned and will be removed by obsolete-record
+            // cleanup before the replacement is created. The records loop above
+            // has checked its exact identity, qdiscs and old ingress filters.
+            let recorded_ifb = records.iter().find(|owned| {
+                owned.id == profile.id && owned.ifb_name == record.ifb_name && owned.ingress
+            });
             // Never adopt a pre-existing IFB merely because its name/alias matches.
             if links.iter().any(|l| l.name == record.ifb_name) {
                 ensure!(
-                    previous.is_some_and(|o| o.ingress),
+                    recorded_ifb.is_some(),
                     "IFB name {} already exists without ownership",
                     record.ifb_name
                 );
             }
-            let owned_ifb = ifb(links, &record)?;
+            let owned_ifb = ifb(links, recorded_ifb.unwrap_or(&record))?;
             if let Some(old) = records.iter().find(|o| {
                 o.device == device && o.index == link.index && o.ingress && o.id != profile.id
             }) {
@@ -573,6 +580,131 @@ mod tests {
 mod native_tests {
     use super::netlink::*;
     use super::*;
+    #[test]
+    #[ignore = "requires root, unshare, CAKE and IFB; always self-isolates"]
+    fn native_move_owned_profile_and_reconnect_without_adopting_foreign_ifb() {
+        const TEST: &str = "service::shaper::native_tests::native_move_owned_profile_and_reconnect_without_adopting_foreign_ifb";
+        if std::env::var_os("ROUTERD_SHAPER_MOVE_NATIVE").is_none() {
+            let output = std::process::Command::new("unshare")
+                .args([
+                    "--net",
+                    "env",
+                    "ROUTERD_SHAPER_MOVE_NATIVE=1",
+                    "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+                ])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--ignored", "--nocapture"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        assert_ne!(
+            std::fs::read_link("/proc/self/ns/net").unwrap(),
+            std::fs::read_link("/proc/1/ns/net").unwrap()
+        );
+        let directory = crate::service::files::StagedDirectory::new().unwrap();
+        let mut config = crate::config::routing::test_config();
+        config.shaper.profiles = vec![crate::config::shaper::tests::profile()];
+        let mut kernel = Kernel::open().unwrap();
+        let add_link = |kernel: &mut Kernel, name: &str| {
+            kernel
+                .nl
+                .request(
+                    16,
+                    ACK | CREATE | EXCL,
+                    link(
+                        0,
+                        0,
+                        0,
+                        vec![string(3, name), nested(18, vec![string(1, "dummy")])],
+                    ),
+                )
+                .unwrap();
+            let index = kernel
+                .links()
+                .unwrap()
+                .iter()
+                .find(|link| link.name == name)
+                .unwrap()
+                .index;
+            kernel.up(index, 1500).unwrap();
+            index
+        };
+        let wan = add_link(&mut kernel, "wan0");
+        let ppp = add_link(&mut kernel, "ppp0");
+        reconcile_kernel(&config, directory.path()).unwrap();
+        let original = load(directory.path()).unwrap();
+        let ifb_index = original[0].ifb_index.unwrap();
+        // Move the same saved profile from a physical WAN to managed PPPoE.
+        config.interfaces.items[0].method = crate::config::schema::InterfaceMethod::Pppoe;
+        config.interfaces.items[0].pppoe = Some(Default::default());
+        let links = kernel.links().unwrap();
+        let qdiscs = kernel.qdiscs().unwrap();
+        assert!(preflight(&mut kernel, &config, &[], &links, &qdiscs)
+            .unwrap_err()
+            .to_string()
+            .contains("without ownership"));
+        // A foreign filter on the old source must block the move before cleanup.
+        kernel
+            .nl
+            .request(45, ACK, tc(wan, 1, INGRESS, FILTER_INFO, vec![]))
+            .unwrap();
+        let mut foreign = config.shaper.profiles[0].clone();
+        foreign.id = 999;
+        kernel.redirect(wan, ifb_index, &foreign).unwrap();
+        assert!(reconcile_kernel(&config, directory.path())
+            .unwrap_err()
+            .to_string()
+            .contains("foreign"));
+        assert!(owned_root(root(&kernel.qdiscs().unwrap(), wan).unwrap()));
+        kernel
+            .nl
+            .request(45, ACK, tc(wan, 1, INGRESS, FILTER_INFO, vec![]))
+            .unwrap();
+        kernel
+            .redirect(wan, ifb_index, &config.shaper.profiles[0])
+            .unwrap();
+        reconcile_kernel(&config, directory.path()).unwrap();
+        let moved = load(directory.path()).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].device, "ppp0");
+        assert_eq!(moved[0].index, ppp);
+        assert_ne!(moved[0].ifb_index, Some(ifb_index));
+        assert!(!kernel
+            .qdiscs()
+            .unwrap()
+            .iter()
+            .any(|q| q.index == wan && (owned_root(q) || q.kind == "ingress")));
+        assert!(owned_root(root(&kernel.qdiscs().unwrap(), ppp).unwrap()));
+        // PPP disappears and comes back with a new index; its owned IFB remains
+        // until reconciliation can validate and clean up the old record.
+        kernel.delete_link(ppp).unwrap();
+        let reconnected = add_link(&mut kernel, "ppp0");
+        assert_ne!(ppp, reconnected);
+        reconcile_kernel(&config, directory.path()).unwrap();
+        let current = load(directory.path()).unwrap();
+        assert_eq!(current[0].index, reconnected);
+        assert!(owned_root(
+            root(&kernel.qdiscs().unwrap(), reconnected).unwrap()
+        ));
+        let filters = kernel.filters(reconnected).unwrap();
+        assert!(kernel::owned_filter(&filters[0], current[0].ifb_index.unwrap(), 1).unwrap());
+        config.shaper.profiles.clear();
+        reconcile_kernel(&config, directory.path()).unwrap();
+        assert!(load(directory.path()).unwrap().is_empty());
+        assert!(!kernel
+            .links()
+            .unwrap()
+            .iter()
+            .any(|link| link.name == "rdsh00000001"));
+    }
+
     #[test]
     #[ignore = "requires root, unshare, CAKE, IFB, matchall and mirred; always self-isolates"]
     fn native_cake_lifecycle_conflicts_and_fairness() {
