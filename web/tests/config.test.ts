@@ -48,9 +48,10 @@ test('handles Rust serialization omitting empty items and hooks', () => {
 test('pool edits preserve the latest reservations and unrelated pools', () => {
   const fresh = {
     ...config,
-    dhcp: { pools: [pool, { ...pool, name: 'guest' }], static_leases: [] },
+    dhcp: { hold_reclaimed_time: 7200, pools: [pool, { ...pool, name: 'guest' }], static_leases: [] },
   };
   const result = replacePool(fresh, pool, { ...pool, lease_time: '6h' });
+  expect(result.hold_reclaimed_time).toBe(7200);
   expect(result.static_leases).toEqual([]);
   expect(result.pools?.[0].lease_time).toBe('6h');
   expect(result.pools?.[1].name).toBe('guest');

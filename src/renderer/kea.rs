@@ -4,6 +4,23 @@ use serde_json::json;
 
 /// Render kea-dhcp4 JSON config from routerd config.
 pub fn render(config: &Config) -> Result<String> {
+    render_with_lease_commands(config, lease_commands_library())
+}
+
+// Distribution packages install this hook in different library directories.
+fn lease_commands_library() -> Option<&'static str> {
+    [
+        "/usr/lib/x86_64-linux-gnu/kea/hooks/libdhcp_lease_cmds.so",
+        "/usr/lib/aarch64-linux-gnu/kea/hooks/libdhcp_lease_cmds.so",
+        "/usr/lib/kea/hooks/libdhcp_lease_cmds.so",
+        "/usr/lib64/kea/hooks/libdhcp_lease_cmds.so",
+        "/usr/local/lib/kea/hooks/libdhcp_lease_cmds.so",
+    ]
+    .into_iter()
+    .find(|path| std::path::Path::new(path).is_file())
+}
+
+fn render_with_lease_commands(config: &Config, library: Option<&str>) -> Result<String> {
     // Gateway: use LAN IP
     let default_gateway = config
         .interfaces
@@ -41,17 +58,22 @@ pub fn render(config: &Config) -> Result<String> {
             pool.dns_servers.join(", ")
         };
 
+        let mut options = vec![
+            json!({ "name": "routers", "data": gateway }),
+            json!({ "name": "domain-name-servers", "data": dns_servers }),
+        ];
+        let domain = pool.domain.trim();
+        if !domain.is_empty() {
+            options.push(json!({ "name": "domain-name", "data": domain }));
+        }
+
         let mut subnet = json!({
             "id": (i + 1) as u32,
             "subnet": pool.subnet,
             "pools": [{
                 "pool": format!("{} - {}", pool.range.start, pool.range.end)
             }],
-            "option-data": [
-                { "name": "routers", "data": gateway },
-                { "name": "domain-name-servers", "data": dns_servers },
-                { "name": "domain-name", "data": pool.domain }
-            ],
+            "option-data": options,
             "valid-lifetime": lease_secs,
             "max-valid-lifetime": lease_secs * 2
         });
@@ -95,8 +117,11 @@ pub fn render(config: &Config) -> Result<String> {
         lan_ifaces
     };
 
-    let kea_config = json!({
+    let mut kea_config = json!({
         "Dhcp4": {
+            "expired-leases-processing": {
+                "hold-reclaimed-time": config.dhcp.hold_reclaimed_time
+            },
             "interfaces-config": {
                 "interfaces": ifaces
             },
@@ -118,6 +143,9 @@ pub fn render(config: &Config) -> Result<String> {
         }
     });
 
+    if let Some(library) = library {
+        kea_config["Dhcp4"]["hooks-libraries"] = json!([{ "library": library }]);
+    }
     let out = serde_json::to_string_pretty(&kea_config)?;
     Ok(out)
 }
@@ -203,6 +231,51 @@ mod tests {
     }
 
     #[test]
+    fn reclaimed_lease_retention_defaults_and_renders() {
+        let dhcp: Dhcp = serde_json::from_str(r#"{"pools":[],"static_leases":[]}"#).unwrap();
+        assert_eq!(dhcp.hold_reclaimed_time, 3600);
+        let mut config = Config::default();
+        for seconds in [3600, 0, 7200, u32::MAX] {
+            config.dhcp.hold_reclaimed_time = seconds;
+            let output: serde_json::Value =
+                serde_json::from_str(&render(&config).unwrap()).unwrap();
+            assert_eq!(
+                output["Dhcp4"]["expired-leases-processing"]["hold-reclaimed-time"],
+                seconds
+            );
+            let saved = serde_json::to_string(&config.dhcp).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Dhcp>(&saved)
+                    .unwrap()
+                    .hold_reclaimed_time,
+                seconds
+            );
+        }
+        for invalid in ["-1", "1.5", "4294967296"] {
+            assert!(serde_json::from_str::<Dhcp>(&format!(
+                r#"{{"hold_reclaimed_time":{invalid}}}"#
+            ))
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn lease_commands_hook_is_optional() {
+        let config = Config::default();
+        let without: serde_json::Value =
+            serde_json::from_str(&render_with_lease_commands(&config, None).unwrap()).unwrap();
+        assert!(without["Dhcp4"].get("hooks-libraries").is_none());
+        let with: serde_json::Value = serde_json::from_str(
+            &render_with_lease_commands(&config, Some("/isolated/libdhcp_lease_cmds.so")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            with["Dhcp4"]["hooks-libraries"][0]["library"],
+            "/isolated/libdhcp_lease_cmds.so"
+        );
+    }
+
+    #[test]
     fn test_render_default() {
         let config = make_config_with_pool("192.168.1.0/24", "192.168.1.100", "192.168.1.250");
         let output = render(&config).unwrap();
@@ -212,6 +285,33 @@ mod tests {
         assert!(output.contains("192.168.1.100 - 192.168.1.250"));
         assert!(output.contains("\"routers\""));
         assert!(output.contains("lan.local"));
+    }
+
+    #[test]
+    fn blank_domain_omits_option_15_without_removing_other_options() {
+        let mut config = make_config_with_pool("192.168.1.0/24", "192.168.1.100", "192.168.1.250");
+        for domain in ["", "   ", "\t\n", "home.example", " home.example "] {
+            config.dhcp.pools[0].domain = domain.into();
+            let output: serde_json::Value =
+                serde_json::from_str(&render(&config).unwrap()).unwrap();
+            let options = output["Dhcp4"]["subnet4"][0]["option-data"]
+                .as_array()
+                .unwrap();
+            assert!(options.iter().any(|option| option["name"] == "routers"));
+            assert!(options
+                .iter()
+                .any(|option| option["name"] == "domain-name-servers"));
+            let domain_option = options
+                .iter()
+                .find(|option| option["name"] == "domain-name");
+            if domain.trim().is_empty() {
+                assert!(domain_option.is_none());
+                assert_eq!(options.len(), 2);
+            } else {
+                assert_eq!(domain_option.unwrap()["data"], "home.example");
+                assert_eq!(options.len(), 3);
+            }
+        }
     }
 
     #[test]

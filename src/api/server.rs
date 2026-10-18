@@ -216,7 +216,11 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
             "/api/monitor/connections",
             get(handlers::monitor::get_connections),
         )
-        .route("/api/monitor/leases", get(handlers::monitor::get_leases));
+        .route("/api/monitor/leases", get(handlers::monitor::get_leases))
+        .route(
+            "/api/dhcp/leases/:address",
+            delete(handlers::monitor::delete_lease),
+        );
 
     let protected = protected.layer(middleware::from_fn_with_state(
         state.auth.clone(),

@@ -3,6 +3,7 @@ import type {
   Config,
   FirewallRule,
   InterfaceConfig,
+  Lease,
   NftSet,
   PortForward,
   Reservation,
@@ -104,6 +105,13 @@ export async function mockRouter(
     set raw(value: string) {
       this.config.singbox = { config: value };
     },
+    activeLeases: [{
+      hostname: 'laptop',
+      mac: '11:22:33:44:55:66',
+      address: '192.168.1.101',
+      expires: '2026-10-16 20:00',
+    }] as Lease[],
+    leaseDeleteError: false,
     deployedRaw: raw,
     writes: [] as { path: string; method: string; body: unknown }[],
     unexpected: [] as string[],
@@ -246,17 +254,7 @@ export async function mockRouter(
             },
           ],
         });
-      if (path === '/monitor/leases')
-        return reply({
-          leases: [
-            {
-              hostname: 'laptop',
-              mac: '11:22:33:44:55:66',
-              address: '192.168.1.101',
-              expires: '2026-10-16 20:00',
-            },
-          ],
-        });
+      if (path === '/monitor/leases') return reply({ leases: state.activeLeases });
       if (path === '/config/backups')
         return reply({
           backups: [
@@ -318,6 +316,13 @@ export async function mockRouter(
         services_restarted: ['networking'],
         changeset: {},
       });
+    }
+    if (path.startsWith('/dhcp/leases/') && method === 'DELETE') {
+      if (state.leaseDeleteError)
+        return reply({ error: { message: 'Kea lease deletion requires the lease_cmds hook.' } }, 409);
+      const address = decodeURIComponent(path.slice('/dhcp/leases/'.length));
+      state.activeLeases = state.activeLeases.filter((lease) => lease.address !== address);
+      return reply({ status: 'ok' });
     }
     if (path === '/config/dhcp') {
       state.config.dhcp = body as Config['dhcp'];

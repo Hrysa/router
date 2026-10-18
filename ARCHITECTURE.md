@@ -77,6 +77,22 @@ External systems and data sources that routerd manages.
 
 Disabled DHCP/PPP/WireGuard services are stopped if active, not started from stale on-disk configuration. `vnstat` has manual API service controls, but `monitoring.vnstat` is not wired into the apply pipeline.
 
+DHCP reclaimed-lease retention is editable in **DHCP & leases → Lease reclamation**.
+`dhcp.hold_reclaimed_time` defaults to 3600 seconds (1 hour); 0 disables retention.
+It renders as Kea’s server-wide `expired-leases-processing.hold-reclaimed-time`.
+Save preserves pools and reservations; Apply activates the setting.
+
+Kea rendering discovers the optional installed `libdhcp_lease_cmds.so` in standard
+multiarch, `/usr/lib`, `/usr/lib64`, and `/usr/local/lib` Kea hooks directories and
+includes it in `hooks-libraries`. Active lease deletion uses the authenticated
+`DELETE /api/dhcp/leases/:address` route, validates IPv4 input, and holds the store
+operation lock while sending `lease4-del` to `/run/kea/kea-dhcp4.sock`. Socket I/O
+has a five-second timeout and a 64 KiB response limit; failed, unsupported, empty,
+and malformed replies never report success. This is an immediate runtime action;
+it does not save config, delete reservations, restart Kea, or edit lease files.
+The CSV reader applies the last record per address before filtering, so deletion
+tombstones, reclaimed records, and shortened leases supersede older active rows.
+
 ### systemd-networkd Config Files
 
 All managed files use `50-routerd-` prefix for cleanup:

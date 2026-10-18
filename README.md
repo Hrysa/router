@@ -19,6 +19,21 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system overview and componen
 - **SPA Web UI** — responsive React dashboard inspired by Yacd-meta, with light/dark/system themes, embedded in the Rust binary
 - **sing-box integration** — raw JSONC stored in routerd configuration, deployed on Apply
 
+DHCP reclaimed-lease retention is editable in **DHCP & leases → Lease reclamation**.
+`dhcp.hold_reclaimed_time` defaults to 3600 seconds (1 hour); 0 disables retention.
+It renders as Kea’s server-wide `expired-leases-processing.hold-reclaimed-time`.
+Save preserves pools and reservations; Apply activates the setting.
+
+Active lease rows offer **Delete**, with confirmation. This takes effect immediately,
+without Apply, and preserves saved reservations. Disconnect the client first:
+deleting the server record does not revoke the client's address, which Kea can
+then assign elsewhere. The renderer loads `libdhcp_lease_cmds.so` when installed
+in standard Kea hooks directories (`/usr/lib/{x86_64-linux-gnu,aarch64-linux-gnu}/kea/hooks`,
+`/usr/lib/kea/hooks`, `/usr/lib64/kea/hooks`, or `/usr/local/lib/kea/hooks`).
+After installing that hook, Apply to load it. Deletion reports an error when the
+hook or `/run/kea/kea-dhcp4.sock` is unavailable; routerd never edits live lease CSV files.
+
+
 There is no managed DNS resolver. `/api/monitor/traffic` and `/api/monitor/connections` currently return placeholders; use `/api/metrics` for collected interface/firewall traffic.
 
 ## Quick Start
@@ -361,6 +376,7 @@ All routes listed below require `Authorization: Bearer <token>`, except the thre
 | GET | `/api/monitor/traffic` | Traffic stats |
 | GET | `/api/monitor/connections` | Conntrack table |
 | GET | `/api/monitor/leases` | DHCP leases |
+| DELETE | `/api/dhcp/leases/:address` | Immediately delete an active IPv4 lease through Kea |
 | GET | `/api/metrics` | Interface/firewall time series (2-second samples, up to 30 minutes) |
 | GET | `/api/metrics/current` | Latest collected sample |
 | GET | `/api/firewall/stats` | Per-rule nftables counters |

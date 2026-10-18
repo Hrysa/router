@@ -15,7 +15,7 @@ import {
   useSave,
   useUi,
 } from '../lib/ui';
-import { checked, Editor, text } from '../components/Editor';
+import { checked, Editor, integer, text } from '../components/Editor';
 import type { Field, Values } from '../components/Editor';
 
 const poolFields: Field[] = [
@@ -77,6 +77,11 @@ export function Dhcp() {
   const config = useConfig();
   const leases = useApi<{ leases: Lease[] }>('/monitor/leases', 10000);
   const ui = useUi();
+  const [editingRetention, setEditingRetention] = useState(false);
+  const retentionSave = useSave(async (seconds: number) => {
+    const fresh = await getConfig();
+    return write('/config/dhcp', { ...fresh.dhcp, hold_reclaimed_time: seconds });
+  });
   const [editing, setEditing] = useState<Pool | 'new' | null>(null);
   const [reservation, setReservation] = useState<Partial<Reservation> | null>(
     null,
@@ -92,6 +97,10 @@ export function Dhcp() {
       const fresh = await getConfig();
       return write('/config/dhcp', replacePool(fresh, original, replacement));
     },
+  );
+  const deleteLease = useSave(
+    (address: string) => write(`/dhcp/leases/${encoded(address)}`, undefined, 'DELETE'),
+    'Active lease deleted.',
   );
   const reserve = useSave((lease: Reservation) =>
     write('/config/dhcp/leases', lease),
@@ -131,6 +140,17 @@ export function Dhcp() {
           <strong>{reservations.length}</strong> reservations
         </span>
       </div>
+      <Card
+        title="Lease reclamation"
+        subtitle={`Server-wide retention of reclaimed leases before deletion · ${config.data ? `${config.data.dhcp.hold_reclaimed_time ?? 3600} seconds` : '—'}`}
+        actions={
+          <button disabled={!config.data} onClick={() => setEditingRetention(true)}>
+            <Edit2 size={16} />
+            Edit retention
+          </button>
+        }
+        children={null}
+      />
       <Card
         title="Address pools"
         subtitle="Kea DHCPv4 · settings are saved until you apply"
@@ -283,6 +303,21 @@ export function Dhcp() {
                 <td className="mono">{lease.mac}</td>
                 <td>{lease.expires || '—'}</td>
                 <td>
+                  <button
+                    className="icon-button danger-text"
+                    aria-label={`Delete active lease ${lease.address}`}
+                    disabled={deleteLease.isPending}
+                    onClick={async () => {
+                      if (await ui.confirm({
+                        title: 'Delete this active lease?',
+                        message: `${lease.address} (${lease.hostname || lease.mac}) will be removed from Kea immediately. The client may keep using this address until renewal, while Kea can assign it to another device. Disconnect the client first to avoid an address conflict. Saved reservations are preserved.`,
+                        label: 'Delete lease now',
+                        dangerous: true,
+                      })) deleteLease.mutate(lease.address);
+                    }}
+                  >
+                    <Trash2 size={16} />
+                  </button>
                   {!reservations.some(
                     (item) =>
                       item.mac.toLowerCase() === lease.mac.toLowerCase(),
@@ -312,6 +347,23 @@ export function Dhcp() {
           />
         )}
       </Card>
+      {editingRetention && (
+        <Editor
+          title="Lease reclamation"
+          initial={{ hold_reclaimed_time: String(config.data?.dhcp.hold_reclaimed_time ?? 3600) }}
+          fields={[{
+            name: 'hold_reclaimed_time',
+            label: 'Hold reclaimed time (seconds)',
+            type: 'number',
+            required: true,
+            min: 0,
+            max: 4294967295,
+            hint: 'Kea default: 3600 seconds (1 hour). Set 0 to disable retention of reclaimed leases. This does not change the active lease duration.',
+          }]}
+          onClose={() => setEditingRetention(false)}
+          onSave={(values) => retentionSave.mutateAsync(integer(values, 'hold_reclaimed_time', 0, 4294967295))}
+        />
+      )}
       {editing && (
         <Editor
           title={original ? `Edit ${original.name}` : 'Add DHCP pool'}

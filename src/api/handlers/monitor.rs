@@ -1,4 +1,8 @@
-use axum::Json;
+use crate::api::{error::ApiError, server::AppState};
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use serde_json::{json, Value};
 
 /// GET /api/monitor/system — system resource stats
@@ -119,14 +123,34 @@ pub async fn get_leases() -> Json<Value> {
     Json(json!({ "leases": leases }))
 }
 
+/// DELETE /api/dhcp/leases/:address — immediately delete a live Kea lease.
+pub async fn delete_lease(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let address = address
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| ApiError::BadRequest("a valid IPv4 lease address is required".into()))?;
+    let _operation = state.config.lock_operation().await;
+    crate::service::kea::delete_lease(address)
+        .await
+        .map_err(|error| match error {
+            crate::service::kea::LeaseError::NotFound => {
+                ApiError::NotFound(format!("lease {address} no longer exists"))
+            }
+            error => ApiError::Conflict(error.to_string()),
+        })?;
+    Ok(Json(json!({"status": "ok"})))
+}
+
 /// Read active leases from kea lease CSV files.
-/// Reads all rotated files (.csv, .csv.1, .csv.2), deduplicates by IP,
-/// keeps the entry with the latest expiry.
+/// Reads older rotated files before the current append-only file.
+/// The last record wins, including deletion tombstones and reclaimed leases.
 async fn read_kea_leases() -> anyhow::Result<Vec<serde_json::Value>> {
     let paths = [
-        "/var/lib/kea/kea-leases4.csv",
-        "/var/lib/kea/kea-leases4.csv.1",
         "/var/lib/kea/kea-leases4.csv.2",
+        "/var/lib/kea/kea-leases4.csv.1",
+        "/var/lib/kea/kea-leases4.csv",
     ];
 
     // Collect all data lines from all files, later files override earlier (newer rotation wins)
@@ -142,38 +166,33 @@ async fn read_kea_leases() -> anyhow::Result<Vec<serde_json::Value>> {
         }
     }
 
-    // Deduplicate by IP: keep the entry with the latest expiry (newest lease wins)
-    use std::collections::HashMap;
-    let mut by_ip: HashMap<String, (String, String, String, i64)> = HashMap::new();
+    Ok(parse_kea_leases(&all_lines, chrono::Utc::now().timestamp()))
+}
 
-    for line in &all_lines {
+fn parse_kea_leases(all_lines: &[String], now: i64) -> Vec<Value> {
+    use std::collections::HashMap;
+    let mut by_ip = HashMap::new();
+    for line in all_lines {
         let fields: Vec<&str> = line.split(',').collect();
         if fields.len() < 10 {
             continue;
         }
-
         let address = fields[0].trim().to_string();
-        let hwaddr = fields[1].trim().to_string();
-        let hostname = fields[8].trim().to_string();
-        let state = fields[9].trim();
-        let expire: i64 = fields[4].trim().parse().unwrap_or(0);
-
-        if address.is_empty() || hwaddr.is_empty() || state != "0" {
+        if address.parse::<std::net::Ipv4Addr>().is_err() {
             continue;
         }
-
-        // Keep the entry with the latest expiry
-        let entry = by_ip.entry(address.clone());
-        entry
-            .and_modify(|e| {
-                if expire > e.3 {
-                    *e = (address.clone(), hwaddr.clone(), hostname.clone(), expire);
-                }
-            })
-            .or_insert((address, hwaddr, hostname, expire));
+        // Remove older records even when this row is a deletion or reclamation.
+        by_ip.remove(&address);
+        let expire = fields[4].trim().parse::<i64>().unwrap_or(0);
+        let valid_lifetime = fields[3].trim().parse::<u32>().unwrap_or(0);
+        let mac = fields[1].trim().to_string();
+        if fields[9].trim() == "0" && valid_lifetime > 0 && !mac.is_empty() && expire > now {
+            by_ip.insert(
+                address.clone(),
+                (address, mac, fields[8].trim().to_string(), expire),
+            );
+        }
     }
-
-    let now = chrono::Utc::now().timestamp();
     let mut leases: Vec<Value> = by_ip
         .into_values()
         .filter(|(_, _, _, expire)| *expire > now) // skip expired
@@ -196,5 +215,25 @@ async fn read_kea_leases() -> anyhow::Result<Vec<serde_json::Value>> {
             .cmp(b["address"].as_str().unwrap_or(""))
     });
 
-    Ok(leases)
+    leases
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+    #[test]
+    fn latest_records_override_active_leases_even_with_earlier_expiry() {
+        let active = "192.0.2.1,aa:bb:cc:dd:ee:ff,,3600,9000,1,0,0,device,0";
+        for newer in [
+            "192.0.2.1,aa:bb:cc:dd:ee:ff,,0,9000,1,0,0,device,0",
+            "192.0.2.1,aa:bb:cc:dd:ee:ff,,3600,9000,1,0,0,device,2",
+            "192.0.2.1,aa:bb:cc:dd:ee:ff,,3600,500,1,0,0,device,0",
+        ] {
+            assert!(parse_kea_leases(&[active.into(), newer.into()], 1000).is_empty());
+        }
+        let newer = "192.0.2.1,11:22:33:44:55:66,,3600,8000,1,0,0,new-device,0";
+        let leases = parse_kea_leases(&[active.into(), newer.into()], 1000);
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0]["mac"], "11:22:33:44:55:66");
+    }
 }

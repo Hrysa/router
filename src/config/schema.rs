@@ -230,6 +230,9 @@ pub struct StaticConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Dhcp {
+    /// Seconds to retain reclaimed leases before deletion (Kea default: one hour).
+    #[serde(default = "default_hold_reclaimed_time")]
+    pub hold_reclaimed_time: u32,
     /// Multiple DHCP pools. Each pool has its own subnet, range, and settings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pools: Vec<DhcpPool>,
@@ -240,10 +243,15 @@ pub struct Dhcp {
 impl Default for Dhcp {
     fn default() -> Self {
         Self {
+            hold_reclaimed_time: default_hold_reclaimed_time(),
             pools: vec![DhcpPool::default()],
             static_leases: vec![],
         }
     }
+}
+
+fn default_hold_reclaimed_time() -> u32 {
+    3600
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

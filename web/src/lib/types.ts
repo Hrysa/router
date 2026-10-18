@@ -186,7 +186,7 @@ export interface Config {
   routing: { routes: StaticRoute[] };
   interfaces: { items: InterfaceConfig[] };
   firewall: Firewall;
-  dhcp: { pools?: Pool[]; static_leases: Reservation[] };
+  dhcp: { hold_reclaimed_time?: number; pools?: Pool[]; static_leases: Reservation[] };
   hooks: Hooks;
   [section: string]: unknown;
 }
