@@ -1,0 +1,150 @@
+name: Build and release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Check and build embedded UI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.1'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: checks
+      - name: Install frontend dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+      - name: Check and build frontend before compiling Rust
+        working-directory: web
+        run: |
+          bun run test
+          bun run check
+          bun run build
+      - name: Check Rust
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked
+          cargo clippy --locked --all-targets -- -D warnings
+          git diff --check
+      - name: Upload embedded UI for binary builds
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedded-web
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      TARGET: ${{ matrix.target }}
+      BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install native musl build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools cmake clang
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Download embedded UI before compiling Rust
+        uses: actions/download-artifact@v4
+        with:
+          name: embedded-web
+          path: web/dist/
+      - name: Build release binary
+        env:
+          CC: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --locked --release --target "$TARGET"
+      - name: Package binary and documentation
+        run: |
+          set -euo pipefail
+          package="routerd-${BUILD_VERSION}-${TARGET}"
+          mkdir -p "package/$package" artifacts
+          install -m 0755 "target/$TARGET/release/routerd" "package/$package/routerd"
+          "package/$package/routerd" --version
+          install -m 0644 README.md ARCHITECTURE.md "package/$package/"
+          if [[ -f LICENSE ]]; then
+            install -m 0644 LICENSE "package/$package/"
+          fi
+          tar -C package -czf "artifacts/$package.tar.gz" "$package"
+          cd artifacts
+          sha256sum "$package.tar.gz" > "$package.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: routerd-${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release archives and checksums
+        uses: actions/download-artifact@v4
+        with:
+          pattern: routerd-*
+          path: artifacts/
+          merge-multiple: true
+      - name: Verify checksums
+        working-directory: artifacts
+        run: |
+          set -euo pipefail
+          for checksum in *.sha256; do
+            sha256sum --check "$checksum"
+          done
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.sha256

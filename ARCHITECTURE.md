@@ -469,6 +469,13 @@ The overview and monitoring pages graph a selected interface rather than summing
 
 Frontend regression tests live in `web/tests/` and use Bun's built-in runner. Build assets with Bun before compiling Rust; `web/dist/` is generated and ignored. See `web/README.md` for commands and `web/THIRD_PARTY_NOTICES.md` for reference attribution.
 
+`.github/workflows/release.yml` builds and checks the frontend first, then passes
+that run's generated assets to native x86-64 and ARM64 musl release-build jobs.
+Pull requests, main-branch pushes, and manual runs produce downloadable artifacts.
+Version-tag pushes also publish GitHub Releases after all checks/builds succeed,
+with archive checksums and generated release notes. CI does not bundle runtime
+configuration or deploy binaries, control services, or apply router state.
+
 Interface MTU and TCP MSS settings are independent of WAN/LAN role. Optional
 `interfaces.items[].mtu` sets the device MTU through networkd, including bridge
 and VLAN creation MTUs; PPPoE keeps its separate `pppoe.mtu` tunnel MTU. Explicit

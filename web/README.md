@@ -27,6 +27,12 @@ Normal daemon startup reconciles other saved network setup and runs startup hook
 
 ## Validation and production
 
+GitHub Actions runs the frontend tests, type checks, and production build before
+Rust checks. Its binary jobs download `web/dist/` from that same workflow run and
+embed it in Linux x86-64/ARM64 musl binaries. Version-tag pushes publish GitHub
+Releases; see [the release workflow](../.github/workflows/release.yml) and the root
+README. Generated frontend assets remain gitignored.
+
 ```bash
 bun run test
 bun run check

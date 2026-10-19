@@ -57,6 +57,35 @@ cd ..
 cargo build --release
 ```
 
+### Automated builds and releases
+
+[Build and release](.github/workflows/release.yml) runs on pull requests, pushes
+to `main`, and version tags (`v*` starting with a digit). It installs frontend
+dependencies from the frozen Bun lockfile, runs frontend tests/type checks,
+builds `web/dist/`, then runs Rust tests, Clippy, and formatting checks. Binary
+jobs download that exact UI build before compiling it into the release binaries.
+
+Successful builds produce Linux x86-64 and ARM64 musl archives with embedded UI,
+README/architecture documentation, and SHA-256 checksums. Download them from the
+workflow's artifacts; no separate web directory is needed. The archives contain
+no runtime configuration, credentials, sing-box binary, or system service changes.
+The GitHub-hosted ARM64 runner requires a public repository or a plan supporting
+that runner. Rust remains on the stable channel; dependency lockfiles are enforced.
+
+To publish a GitHub Release after committing and pushing your changes:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Choose a new version tag for each release and update the Cargo package version
+when appropriate. A tag containing `-`, such as `v0.2.0-rc.1`, publishes a
+prerelease. Publication waits for checks and both binary builds, then verifies
+archive checksums and uploads assets using the built-in `GITHUB_TOKEN`; no
+additional publishing secret is required. Manual **Run workflow** builds artifacts
+without publishing a release. The workflow never deploys to a router.
+
 ### Run
 
 ```bash
