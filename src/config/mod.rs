@@ -10,3 +10,4 @@ pub mod wan_groups;
 
 pub use schema::Config;
 pub use store::ConfigStore;
+pub mod address_selector;

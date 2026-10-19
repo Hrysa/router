@@ -364,21 +364,14 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
             ("target_address", &pf.target_address),
         ] {
             if let Some(address) = address {
-                let valid = if let Some(name) = address.strip_prefix('@') {
-                    config
-                        .firewall
-                        .sets
-                        .iter()
-                        .any(|set| set.name == name && set.set_type == "ipv4_addr")
-                } else {
-                    super::static_routes::destination(address)
-                        .is_ok_and(|(network, _)| network.is_ipv4())
-                };
+                let valid = super::address_selector::AddressSelector::parse(address)
+                    .supports_ipv4(&config.firewall.sets);
                 if !valid {
                     errors.push(ValidationError {
                         field: format!("firewall.nat.port_forward[{i}].{field}"),
-                        message: "must be an IPv4 address/subnet or an existing ipv4_addr set"
-                            .into(),
+                        message:
+                            "must be an IPv4 address/subnet, @local, or an existing ipv4_addr set"
+                                .into(),
                     });
                 }
             }
@@ -661,6 +654,20 @@ mod tests {
             .port_forward
             .push(serde_json::from_value(rule.clone()).unwrap());
         assert!(validate(&config).is_empty());
+        config.firewall.sets.push(
+            serde_json::from_value(serde_json::json!({
+                "name": "nat_addresses", "set_type": "ipv4_addr", "elements": "192.0.2.1"
+            }))
+            .unwrap(),
+        );
+        for field in ["source_address", "target_address"] {
+            for value in ["@local", "@nat_addresses"] {
+                let mut changed = rule.clone();
+                changed[field] = serde_json::json!(value);
+                config.firewall.nat.port_forward[0] = serde_json::from_value(changed).unwrap();
+                assert!(validate(&config).is_empty(), "rejected {field} {value}");
+            }
+        }
         for (field, value) in [
             ("source_address", "::1"),
             ("target_address", "invalid"),

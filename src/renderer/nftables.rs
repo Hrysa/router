@@ -1,3 +1,4 @@
+use crate::config::address_selector::AddressSelector;
 use crate::config::routing::{
     internal_ipv4_subnets, wan_return_routes, WanReturnRoute, WAN_MARK_MASK,
 };
@@ -12,6 +13,17 @@ use std::collections::HashSet;
 
 /// Render nftables ruleset as JSON for `nft -j -f`.
 pub fn render(config: &Config) -> Result<String> {
+    for pf in &config.firewall.nat.port_forward {
+        for address in [&pf.source_address, &pf.target_address]
+            .into_iter()
+            .flatten()
+        {
+            anyhow::ensure!(
+                AddressSelector::parse(address).supports_ipv4(&config.firewall.sets),
+                "invalid IPv4 NAT address selector: {address}"
+            );
+        }
+    }
     let group_errors = crate::config::wan_groups::validate(config);
     anyhow::ensure!(
         group_errors.is_empty(),
@@ -564,7 +576,7 @@ fn build_rule_match_stmts(
 
     // Source address
     if let Some(saddr) = &rule.saddr {
-        if saddr == "@local" {
+        if AddressSelector::parse(saddr) == AddressSelector::Local {
             stmts.push(fib_saddr_local_match(rule.saddr_invert));
         } else if let Some(stmt) = set_ref_match(config, "saddr", saddr, rule.saddr_invert) {
             stmts.push(stmt);
@@ -575,7 +587,7 @@ fn build_rule_match_stmts(
 
     // Destination address
     if let Some(daddr) = &rule.daddr {
-        if daddr == "@local" {
+        if AddressSelector::parse(daddr) == AddressSelector::Local {
             stmts.push(fib_daddr_local_match(rule.daddr_invert));
         } else if let Some(stmt) = set_ref_match(config, "daddr", daddr, rule.daddr_invert) {
             stmts.push(stmt);
@@ -1058,7 +1070,7 @@ fn build_port_forward_match_stmts(pf: &PortForward, proto: &str) -> Vec<Statemen
 
     // Source address
     if let Some(ref saddr) = pf.source_address {
-        if saddr == "@local" {
+        if AddressSelector::parse(saddr) == AddressSelector::Local {
             stmts.push(fib_saddr_local_match(pf.source_address_invert));
         } else {
             stmts.push(ip_saddr_match(saddr, pf.source_address_invert));
@@ -1067,7 +1079,7 @@ fn build_port_forward_match_stmts(pf: &PortForward, proto: &str) -> Vec<Statemen
 
     // Target address
     if let Some(ref taddr) = pf.target_address {
-        if taddr == "@local" {
+        if AddressSelector::parse(taddr) == AddressSelector::Local {
             stmts.push(fib_daddr_local_match(pf.target_address_invert));
         } else {
             stmts.push(ip_daddr_match(taddr, pf.target_address_invert));
@@ -2801,6 +2813,51 @@ for family, address, cap in [(socket.AF_INET, '127.0.0.1', 1452), (socket.AF_INE
         assert!(json_str.contains("dnat"));
         // Should NOT have masquerade for non-LAN target
         // (masquerade only appears in postrouting for LAN targets)
+    }
+
+    #[test]
+    fn nat_address_selectors_validate_and_render_sets_and_local() {
+        let mut config = Config::default();
+        config.firewall.sets = serde_json::from_value(serde_json::json!([
+            {"name":"clients","set_type":"ipv4_addr","elements":"192.0.2.1"},
+            {"name":"servers","set_type":"ipv4_addr","elements":"203.0.113.1"}
+        ]))
+        .unwrap();
+        config.firewall.nat.port_forward = serde_json::from_value(serde_json::json!([
+            {"id":1,"proto":"tcp","interfaces":["wan0"],"source_address":"@clients",
+             "target_address":"@servers","source_address_invert":true,
+             "redirect_address":"192.168.1.10","target_port":443}
+        ]))
+        .unwrap();
+        assert!(crate::config::validator::validate(&config).is_empty());
+        let val = render_json(&config);
+        for name in ["clients", "servers"] {
+            assert!(val["nftables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|object| object["add"]["set"]["table"] == "nat"
+                    && object["add"]["set"]["name"] == name));
+        }
+        let rendered = render(&config).unwrap();
+        assert!(rendered.contains("@clients") && rendered.contains("@servers"));
+        config.firewall.sets[1].set_type = "inet_service".into();
+        assert!(!crate::config::validator::validate(&config).is_empty());
+        assert!(render(&config).is_err());
+        config.firewall.sets[1].set_type = "ipv4_addr".into();
+        for field in ["source", "target"] {
+            let pf = &mut config.firewall.nat.port_forward[0];
+            if field == "source" {
+                pf.source_address = Some("@local".into());
+            } else {
+                pf.target_address = Some("@local".into());
+            }
+            assert!(crate::config::validator::validate(&config).is_empty());
+            assert!(render(&config).unwrap().contains("\"fib\""));
+        }
+        config.firewall.nat.port_forward[0].target_address = Some("@missing".into());
+        assert!(!crate::config::validator::validate(&config).is_empty());
+        assert!(render(&config).is_err());
     }
 
     #[test]

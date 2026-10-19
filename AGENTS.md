@@ -8,6 +8,15 @@
 - Normal startup reconciles saved configuration except nftables and sing-box, changes NIC offloads, and runs startup hooks. It must not run nftables checks/install, read/write deployed sing-box JSONC, or query/control sing-box. `--boot` instead validates/renders/checks/installs only nftables, then serves the API, skipping other service/file/network changes, routes, shaping, offloads, and hooks; it conflicts with `--init` and `--install-singbox`. `--init` skips all those startup changes even with an existing config, but can create a missing draft config and persist authentication state. It is not a read-only mode: explicit API Apply still changes the host.
 - Apply is **not transactional across files, services, and kernel state**. Failure can leave partial changes. Backup restore is explicit, not automatic recovery after a failed apply.
 
+## Design and implementation
+
+- Before changing behavior, trace the concept through schema, validation, API, rendering, UI, and documentation. Identify its complete supported forms and existing callers; a fix must preserve that contract, including saved configurations.
+- Put shared domain semantics in a common parser/type/helper and reuse it wherever the concept appears. Keep validation and rendering aligned through that shared representation instead of maintaining separate lists of accepted strings or adding special cases at each call site.
+- Separate parsing and reference resolution from context-specific capabilities. For example, address selectors may represent an IP, subnet, named set, or router-local addresses; a match filter and a DNAT destination have different constraints. Express those constraints explicitly while sharing the underlying selector semantics.
+- Fix the underlying class of problem. When one supported form fails, inspect sibling forms and consumers, and cover the behavior matrix with focused tests: valid forms, invalid forms, reference existence/type, and compatibility with existing saved data. Do not treat a single reported example as the entire specification.
+- Prefer small, cohesive abstractions grounded in actual shared behavior. Consolidate duplicated logic within the affected scope; avoid speculative frameworks, unrelated rewrites, and broad refactors disguised as bug fixes.
+- Before finishing, check that schema defaults, backend acceptance, generated output, UI choices, error messages, and documentation agree. Explicitly document intentional restrictions and compatibility changes.
+
 ## Source of truth
 
 - `src/config/schema.rs`: configuration types, defaults, and interface-role inference. Interfaces use `interfaces.items`; DHCP uses `dhcp.pools` and `dhcp.static_leases`.

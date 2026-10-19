@@ -28,7 +28,8 @@ a penetration test or proof of a production deployment.
 | Browser coverage was not a release prerequisite, and a chart assertion became ambiguous after a second chart was added. | Run mocked desktop/mobile tests as a release dependency; scope the assertion to the traffic card. |
 | Documentation contained outdated installer/stub claims, generic network filenames, unsafe development examples, and feature sections after the license. | Reorganize the current setup/runtime documentation and replace the old review status with this dated report. |
 
-NAT source/destination filters now accept IPv4 subnets or configured IPv4 sets;
+NAT source/destination filters accept IPv4 addresses/subnets, `@local` (the
+router's own addresses), or configured IPv4 sets;
 the translated destination remains a single IPv4 address. JWT-secret initialization
 also takes the configuration operation lock. Save-versus-Apply, startup isolation,
 secret-file permissions, snapshot publication, and explicit restore semantics
