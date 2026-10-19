@@ -7,7 +7,7 @@ use crate::config::diff::ChangeSet;
 use crate::config::Config;
 use crate::renderer;
 use crate::renderer::interfaces::NetworkFile;
-use crate::service::manager::{Service, ServiceManager};
+use crate::service::manager::{CommandExt, Service, ServiceManager};
 
 /// Result of an apply operation.
 #[derive(Debug, serde::Serialize)]
@@ -515,7 +515,7 @@ async fn apply_sysctl() -> Result<()> {
 
     let output = Command::new("sysctl")
         .args(["-p", "/etc/sysctl.d/90-routerd.conf"])
-        .output()
+        .timeout_run(std::time::Duration::from_secs(30))
         .await?;
 
     if !output.status.success() {
@@ -540,99 +540,201 @@ fn extract_tproxy_marks(config: &Config) -> HashSet<u32> {
         .collect()
 }
 
-/// Set up ip rule + ip route for TPROXY.
-///
-/// For each unique fwmark in tproxy rules:
-///   ip rule add fwmark <N> lookup <N>
-///   ip route add local 0.0.0.0/0 dev lo table <N>
-///
-/// Old rules/routes are cleaned up first to handle config changes,
-/// including marks that were removed from the config.
+fn ip_number(value: &serde_json::Value) -> Option<u32> {
+    value
+        .as_u64()
+        .and_then(|number| number.try_into().ok())
+        .or_else(|| {
+            let value = value.as_str()?;
+            value.strip_prefix("0x").map_or_else(
+                || value.parse().ok(),
+                |hex| u32::from_str_radix(hex, 16).ok(),
+            )
+        })
+}
+
+fn tproxy_cleanup_plan(
+    previous: &HashSet<u32>,
+    current: &HashSet<u32>,
+    rules: &[serde_json::Value],
+    routes: &[serde_json::Value],
+) -> Result<Vec<Vec<String>>> {
+    let mut commands = Vec::new();
+    let marks: std::collections::BTreeSet<_> = previous.union(current).copied().collect();
+    for mark in marks {
+        let candidates: Vec<_> = rules
+            .iter()
+            .filter(|rule| {
+                ip_number(&rule["fwmark"]) == Some(mark) && ip_number(&rule["table"]) == Some(mark)
+            })
+            .collect();
+        for rule in candidates {
+            // ip-rule deletion has no unique handle. Refuse scoped/masked or
+            // foreign-protocol collisions instead of deleting the wrong rule.
+            let unscoped = rule.as_object().is_some_and(|object| {
+                object.keys().all(|key| {
+                    matches!(
+                        key.as_str(),
+                        "priority"
+                            | "src"
+                            | "dst"
+                            | "srclen"
+                            | "dstlen"
+                            | "fwmark"
+                            | "fwmask"
+                            | "table"
+                            | "protocol"
+                            | "action"
+                            | "not"
+                    )
+                })
+            }) && ["src", "dst"]
+                .iter()
+                .all(|key| rule[*key].is_null() || rule[*key] == "all")
+                && ["srclen", "dstlen"]
+                    .iter()
+                    .all(|key| rule[*key].is_null() || ip_number(&rule[*key]) == Some(0))
+                && (rule["fwmask"].is_null() || ip_number(&rule["fwmask"]) == Some(u32::MAX))
+                && (rule["protocol"].is_null()
+                    || rule["protocol"] == "boot"
+                    || matches!(ip_number(&rule["protocol"]), Some(0 | 3)))
+                && (rule["action"].is_null()
+                    || rule["action"] == "to_tbl"
+                    || ip_number(&rule["action"]) == Some(1))
+                && rule["not"].as_bool() != Some(true);
+            anyhow::ensure!(unscoped, "conflicting scoped or foreign TPROXY policy rule for mark/table {mark}; refusing cleanup: {rule}");
+            let priority = ip_number(&rule["priority"])
+                .ok_or_else(|| anyhow::anyhow!("TPROXY rule has no valid priority"))?;
+            commands.push(vec![
+                "-4".into(),
+                "rule".into(),
+                "del".into(),
+                "priority".into(),
+                priority.to_string(),
+                "fwmark".into(),
+                mark.to_string(),
+                "lookup".into(),
+                mark.to_string(),
+            ]);
+        }
+        if !current.contains(&mark) {
+            for _route in routes.iter().filter(|route| {
+                ip_number(&route["table"]) == Some(mark)
+                    && route.as_object().is_some_and(|object| {
+                        object.keys().all(|key| {
+                            matches!(
+                                key.as_str(),
+                                "table"
+                                    | "type"
+                                    | "dev"
+                                    | "dst"
+                                    | "scope"
+                                    | "protocol"
+                                    | "metric"
+                                    | "flags"
+                            )
+                        })
+                    })
+                    && (route["scope"].is_null()
+                        || route["scope"] == "host"
+                        || ip_number(&route["scope"]) == Some(254))
+                    && (route["flags"].is_null()
+                        || route["flags"].as_array().is_some_and(Vec::is_empty))
+                    && (route["type"] == "local" || ip_number(&route["type"]) == Some(2))
+                    && route["dev"] == "lo"
+                    && (route["dst"] == "default" || route["dst"] == "0.0.0.0/0")
+                    && (route["metric"].is_null() || ip_number(&route["metric"]) == Some(0))
+                    && (route["protocol"].is_null()
+                        || route["protocol"] == "boot"
+                        || ip_number(&route["protocol"]) == Some(3))
+            }) {
+                commands.push(vec![
+                    "-4".into(),
+                    "route".into(),
+                    "del".into(),
+                    "local".into(),
+                    "0.0.0.0/0".into(),
+                    "dev".into(),
+                    "lo".into(),
+                    "table".into(),
+                    mark.to_string(),
+                    "metric".into(),
+                    "0".into(),
+                ]);
+            }
+        }
+    }
+    Ok(commands)
+}
+
+async fn tproxy_ip(ip: &str, args: &[String]) -> Result<std::process::Output> {
+    let output = tokio::process::Command::new(ip)
+        .args(args)
+        .timeout_run(std::time::Duration::from_secs(30))
+        .await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "TPROXY ip operation {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(output)
+}
+
+/// Reconcile only matching policy rules/local defaults. Snapshot errors and
+/// required cleanup failures propagate; an already absent entry needs no delete.
 async fn apply_tproxy_routing(prev_config: &Config, config: &Config) -> Result<()> {
-    let prev_marks = extract_tproxy_marks(prev_config);
-    let curr_marks = extract_tproxy_marks(config);
-    let removed_marks: HashSet<u32> = prev_marks.difference(&curr_marks).copied().collect();
-
-    let marks_to_clean: HashSet<u32> = curr_marks.union(&removed_marks).copied().collect();
-    for mark in &marks_to_clean {
-        if removed_marks.contains(mark) {
-            let _ = tokio::process::Command::new("ip")
-                .args([
-                    "route",
-                    "del",
-                    "local",
-                    "0.0.0.0/0",
-                    "dev",
-                    "lo",
-                    "table",
-                    &mark.to_string(),
-                ])
-                .output()
-                .await;
-        }
-        let _ = tokio::process::Command::new("ip")
-            .args([
-                "rule",
-                "del",
-                "fwmark",
-                &mark.to_string(),
-                "lookup",
-                &mark.to_string(),
-            ])
-            .output()
-            .await;
+    let previous = extract_tproxy_marks(prev_config);
+    let current = extract_tproxy_marks(config);
+    if previous.is_empty() && current.is_empty() {
+        return Ok(());
     }
-
-    // Set up routing for each current mark
-    for mark in &curr_marks {
-        // ip rule add fwmark <N> lookup <N>
-        let output = tokio::process::Command::new("ip")
-            .args([
-                "rule",
-                "add",
-                "fwmark",
-                &mark.to_string(),
-                "lookup",
-                &mark.to_string(),
-            ])
-            .output()
-            .await?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("ip rule add failed for mark {}: {}", mark, stderr.trim());
-        }
-
-        // ip route add local 0.0.0.0/0 dev lo table <N>
-        let output = tokio::process::Command::new("ip")
-            .args([
-                "route",
-                "replace",
-                "local",
-                "0.0.0.0/0",
-                "dev",
-                "lo",
-                "table",
-                &mark.to_string(),
-            ])
-            .output()
-            .await?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
-                "ip route replace failed for mark {}: {}",
-                mark,
-                stderr.trim()
-            );
+    let ip = crate::service::manager::find_command("ip")?;
+    let rules = tproxy_ip(
+        &ip,
+        &["-j", "-4", "-N", "-d", "rule", "show"].map(str::to_owned),
+    )
+    .await?;
+    let routes = tproxy_ip(
+        &ip,
+        &["-j", "-4", "-N", "route", "show", "table", "all"].map(str::to_owned),
+    )
+    .await?;
+    let rules: Vec<serde_json::Value> = serde_json::from_slice(&rules.stdout)?;
+    let routes: Vec<serde_json::Value> = serde_json::from_slice(&routes.stdout)?;
+    for args in tproxy_cleanup_plan(&previous, &current, &rules, &routes)? {
+        tproxy_ip(&ip, &args).await?;
+    }
+    for mark in current
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        for args in [
+            vec![
+                "-4".into(),
+                "rule".into(),
+                "add".into(),
+                "fwmark".into(),
+                mark.to_string(),
+                "lookup".into(),
+                mark.to_string(),
+            ],
+            vec![
+                "-4".into(),
+                "route".into(),
+                "replace".into(),
+                "local".into(),
+                "0.0.0.0/0".into(),
+                "dev".into(),
+                "lo".into(),
+                "table".into(),
+                mark.to_string(),
+            ],
+        ] {
+            tproxy_ip(&ip, &args).await?;
         }
     }
-
-    if !removed_marks.is_empty() {
-        tracing::info!(?removed_marks, "cleaned up removed tproxy marks");
-    }
-    if !curr_marks.is_empty() {
-        tracing::info!(?curr_marks, "tproxy routing configured");
-    }
-
     Ok(())
 }
 
@@ -896,6 +998,208 @@ mod tests {
         let error = boot_nftables_with(&config, &manager).await.unwrap_err();
         assert!(error.to_string().contains("config validation failed"));
         assert!(manager.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tproxy_required_command_errors_propagate() {
+        let script = crate::service::files::StagedFile::new(
+            &std::env::temp_dir(),
+            b"#!/bin/sh\necho denied >&2\nexit 42\n",
+            0o700,
+        )
+        .unwrap();
+        let error = tproxy_ip(script.path().to_str().unwrap(), &[])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("denied"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires root, unshare and ip; always self-isolates"]
+    async fn native_tproxy_routing_reconciles_duplicates_and_preserves_foreign_entries() {
+        const TEST: &str = "service::apply::tests::native_tproxy_routing_reconciles_duplicates_and_preserves_foreign_entries";
+        if std::env::var_os("ROUTERD_TPROXY_ROUTE_NATIVE").is_none() {
+            let output = std::process::Command::new("unshare")
+                .args(["--net", "env", "ROUTERD_TPROXY_ROUTE_NATIVE=1"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--ignored", "--nocapture"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        assert_ne!(
+            std::fs::read_link("/proc/self/ns/net").unwrap(),
+            std::fs::read_link("/proc/1/ns/net").unwrap()
+        );
+        let ip = crate::service::manager::find_command("ip").unwrap();
+        let run = |args: &[&str]| args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        tproxy_ip(&ip, &run(&["link", "set", "lo", "up"]))
+            .await
+            .unwrap();
+        let empty = Config::default();
+        let mut config = empty.clone();
+        config.firewall.rules.input.push(serde_json::from_value(serde_json::json!({"id":1,"action":"tproxy","interfaces":["lo"],"mark":1,"tproxy_port":12345})).unwrap());
+        apply_tproxy_routing(&empty, &config).await.unwrap();
+        tproxy_ip(
+            &ip,
+            &run(&["-4", "rule", "add", "fwmark", "1", "lookup", "1"]),
+        )
+        .await
+        .unwrap();
+        tproxy_ip(
+            &ip,
+            &run(&[
+                "-4",
+                "route",
+                "add",
+                "local",
+                "192.0.2.0/24",
+                "dev",
+                "lo",
+                "table",
+                "1",
+            ]),
+        )
+        .await
+        .unwrap();
+        tproxy_ip(
+            &ip,
+            &run(&[
+                "-4", "route", "add", "local", "default", "dev", "lo", "table", "1", "metric",
+                "100",
+            ]),
+        )
+        .await
+        .unwrap();
+        apply_tproxy_routing(&config, &config).await.unwrap();
+        let rules = tproxy_ip(&ip, &run(&["-j", "-4", "-N", "-d", "rule", "show"]))
+            .await
+            .unwrap();
+        let rules: Vec<serde_json::Value> = serde_json::from_slice(&rules.stdout).unwrap();
+        assert_eq!(
+            rules
+                .iter()
+                .filter(|rule| ip_number(&rule["fwmark"]) == Some(1))
+                .count(),
+            1
+        );
+        tproxy_ip(
+            &ip,
+            &run(&[
+                "-4",
+                "rule",
+                "add",
+                "priority",
+                "10010",
+                "from",
+                "192.0.2.0/24",
+                "fwmark",
+                "1",
+                "lookup",
+                "1",
+            ]),
+        )
+        .await
+        .unwrap();
+        assert!(apply_tproxy_routing(&config, &empty).await.is_err());
+        tproxy_ip(
+            &ip,
+            &run(&[
+                "-4",
+                "rule",
+                "del",
+                "priority",
+                "10010",
+                "from",
+                "192.0.2.0/24",
+                "fwmark",
+                "1",
+                "lookup",
+                "1",
+            ]),
+        )
+        .await
+        .unwrap();
+        apply_tproxy_routing(&config, &empty).await.unwrap();
+        let routes = tproxy_ip(
+            &ip,
+            &run(&["-j", "-4", "-N", "route", "show", "table", "1"]),
+        )
+        .await
+        .unwrap();
+        let routes: Vec<serde_json::Value> = serde_json::from_slice(&routes.stdout).unwrap();
+        assert!(routes.iter().any(|route| route["dst"] == "192.0.2.0/24"));
+        assert!(routes
+            .iter()
+            .any(|route| ip_number(&route["metric"]) == Some(100)));
+        assert!(
+            !routes
+                .iter()
+                .any(|route| route["dst"] == "default" && route["metric"].is_null()),
+            "{routes:?}"
+        );
+        println!("TPROXY duplicate cleanup, scoped-rule protection, and unrelated-route preservation passed");
+    }
+
+    #[test]
+    fn tproxy_cleanup_uses_live_entries_and_preserves_other_routes() {
+        let rules = vec![
+            serde_json::json!({"priority":32765,"src":"all","fwmark":"0x1","table":1,"protocol":"boot"}),
+        ];
+        let routes = vec![
+            serde_json::json!({"table":1,"type":"local","dst":"default","dev":"lo","protocol":"boot"}),
+            serde_json::json!({"table":1,"type":"local","dst":"192.0.2.0/24","dev":"lo"}),
+            serde_json::json!({"table":1,"type":"local","dst":"default","dev":"lo","metric":100}),
+            serde_json::json!({"table":99,"type":"local","dst":"default","dev":"lo"}),
+            serde_json::json!({"table":1,"type":"local","dst":"default","dev":"lo","tos":16}),
+            serde_json::json!({"table":1,"type":"local","dst":"default","dev":"lo","prefsrc":"192.0.2.1"}),
+        ];
+        // iproute2 emits protocol "0" and a string table for rules created
+        // without an explicit protocol; these are the legacy routerd rules.
+        let mut legacy_rules = rules.clone();
+        legacy_rules[0]["protocol"] = serde_json::json!("0");
+        legacy_rules[0]["table"] = serde_json::json!("1");
+        let mut legacy_routes = routes.clone();
+        legacy_routes[0]["type"] = serde_json::json!("2");
+        legacy_routes[0]["table"] = serde_json::json!("1");
+        let previous = HashSet::from([1]);
+        assert_eq!(
+            tproxy_cleanup_plan(&previous, &HashSet::new(), &legacy_rules, &legacy_routes)
+                .unwrap()
+                .len(),
+            2
+        );
+        let plan = tproxy_cleanup_plan(&previous, &HashSet::new(), &rules, &routes).unwrap();
+        assert_eq!(plan.len(), 2);
+        assert!(plan[0].contains(&"32765".into()));
+        assert_eq!(plan[1].last().unwrap(), "0");
+        assert!(tproxy_cleanup_plan(&previous, &HashSet::new(), &[], &[])
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            tproxy_cleanup_plan(&previous, &previous, &rules, &routes)
+                .unwrap()
+                .len(),
+            1
+        );
+        for (key, value) in [
+            ("src", serde_json::json!("192.0.2.0/24")),
+            ("iif", serde_json::json!("wan0")),
+            ("fwmask", serde_json::json!(255)),
+            ("protocol", serde_json::json!("static")),
+        ] {
+            let mut conflicting = rules.clone();
+            conflicting[0][key] = value;
+            assert!(
+                tproxy_cleanup_plan(&previous, &HashSet::new(), &conflicting, &routes).is_err()
+            );
+        }
     }
 
     #[test]

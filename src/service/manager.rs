@@ -291,7 +291,7 @@ impl ServiceManager {
 }
 
 /// Extension trait for tokio Command timeout.
-trait CommandExt {
+pub(crate) trait CommandExt {
     async fn timeout_run(&mut self, duration: Duration) -> Result<std::process::Output>;
 }
 

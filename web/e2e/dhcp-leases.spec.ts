@@ -32,3 +32,13 @@ test('Kea deletion failures leave the active lease visible', async ({ page }) =>
   expect(state.activeLeases).toHaveLength(1);
   expect(state.unexpected).toEqual([]);
 });
+
+test('a reservation with different MAC spelling still matches its active lease', async ({ page }) => {
+  const state = await mockRouter(page);
+  state.config.dhcp.static_leases.push({ mac: '11-22-33-44-55-66', ip: '192.168.1.101', hostname: 'laptop' });
+  await page.goto('/#/dhcp');
+  await expect(page.getByRole('button', { name: 'Delete active lease 192.168.1.101', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reserve', exact: true })).toHaveCount(0);
+  expect(state.writes).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+});

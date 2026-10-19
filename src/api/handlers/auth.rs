@@ -94,6 +94,7 @@ pub async fn setup(
 
 /// Ensure the config has a JWT secret, generating one if missing.
 pub async fn ensure_jwt_secret(config_store: &ConfigStore) -> anyhow::Result<()> {
+    let _operation = config_store.lock_operation().await;
     let config = config_store.get().await;
     if !config.auth.jwt_secret.is_empty() {
         return Ok(());

@@ -54,7 +54,9 @@ test('empty traffic history describes the two-second sampling interval', async (
   );
   await page.goto('/');
   await expect(
-    page.getByText(
+    page.locator('section').filter({
+      has: page.getByRole('heading', { name: 'Traffic overview', exact: true }),
+    }).getByText(
       'The router collects a sample every two seconds. History appears after two samples.',
       { exact: true },
     ),

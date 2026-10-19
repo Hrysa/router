@@ -46,7 +46,18 @@ fn render_with_lease_commands(config: &Config, library: Option<&str>) -> Result<
 
         // Gateway: pool override or default LAN IP
         let gateway = if pool.gateway.is_empty() {
-            default_gateway.clone()
+            config
+                .interfaces
+                .items
+                .iter()
+                .filter(|interface| {
+                    interface.method == InterfaceMethod::Static && !interface.is_wan()
+                })
+                .filter_map(|interface| interface.static_config.as_ref())
+                .map(|settings| ip_from_cidr(&settings.address))
+                .find(|address| is_ip_in_cidr(address, &pool.subnet))
+                .map(str::to_owned)
+                .unwrap_or_else(|| default_gateway.clone())
         } else {
             pool.gateway.clone()
         };
@@ -91,7 +102,7 @@ fn render_with_lease_commands(config: &Config, library: Option<&str>) -> Result<
                 .iter()
                 .map(|lease| {
                     json!({
-                        "hw-address": lease.mac,
+                        "hw-address": crate::config::validator::mac_identity(&lease.mac),
                         "ip-address": lease.ip,
                         "hostname": lease.hostname
                     })
@@ -108,7 +119,7 @@ fn render_with_lease_commands(config: &Config, library: Option<&str>) -> Result<
         .interfaces
         .items
         .iter()
-        .filter(|i| i.is_lan() && !i.name.is_empty())
+        .filter(|i| i.method == InterfaceMethod::Static && !i.is_wan() && !i.name.is_empty())
         .map(|i| i.name.as_str())
         .collect();
     let ifaces: Vec<&str> = if lan_ifaces.is_empty() {
@@ -276,6 +287,107 @@ mod tests {
     }
 
     #[test]
+    fn vlan_pools_bind_to_their_lan_and_derive_a_gateway_in_their_own_subnet() {
+        let mut config = crate::config::routing::test_config();
+        config.dhcp.pools = vec![
+            DhcpPool {
+                subnet: "192.168.0.0/23".into(),
+                dns_servers: vec![],
+                ..DhcpPool::default()
+            },
+            DhcpPool {
+                name: "vlan".into(),
+                subnet: "192.168.2.0/23".into(),
+                range: DhcpRange {
+                    start: "192.168.2.100".into(),
+                    end: "192.168.2.200".into(),
+                },
+                dns_servers: vec![],
+                ..DhcpPool::default()
+            },
+        ];
+        let value: serde_json::Value = serde_json::from_str(&render(&config).unwrap()).unwrap();
+        assert_eq!(
+            value["Dhcp4"]["interfaces-config"]["interfaces"],
+            json!(["lan0", "vlan2"])
+        );
+        for (index, expected) in [(0, "192.168.0.1"), (1, "192.168.2.1")] {
+            let options = value["Dhcp4"]["subnet4"][index]["option-data"]
+                .as_array()
+                .unwrap();
+            for name in ["routers", "domain-name-servers"] {
+                assert_eq!(
+                    options
+                        .iter()
+                        .find(|option| option["name"] == name)
+                        .unwrap()["data"],
+                    expected
+                );
+            }
+        }
+        config.dhcp.pools[1].gateway = "192.168.2.254".into();
+        let value: serde_json::Value = serde_json::from_str(&render(&config).unwrap()).unwrap();
+        assert_eq!(
+            value["Dhcp4"]["subnet4"][1]["option-data"][0]["data"],
+            "192.168.2.254"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires root, unshare, ip and kea-dhcp4; checks a temporary config in an isolated network namespace"]
+    fn native_check_internal_and_vlan_pools() {
+        let mut config = Config::default();
+        config.interfaces.items = serde_json::from_value(json!([
+            {"name":"lan0","method":"static","static_config":{"address":"192.168.1.1/24"}},
+            {"name":"vlan2","method":"static","vlan_id":2,"parent":"lan0","static_config":{"address":"192.168.2.1/24"}}
+        ])).unwrap();
+        config.dhcp.pools.push(DhcpPool {
+            name: "vlan".into(),
+            subnet: "192.168.2.0/24".into(),
+            range: DhcpRange {
+                start: "192.168.2.100".into(),
+                end: "192.168.2.200".into(),
+            },
+            dns_servers: vec![],
+            ..DhcpPool::default()
+        });
+        assert!(crate::config::validator::validate(&config).is_empty());
+        let staged = crate::service::files::StagedFile::new(
+            &std::env::temp_dir(),
+            render(&config).unwrap().as_bytes(),
+            0o644,
+        )
+        .unwrap();
+        let kea = crate::service::manager::find_command("kea-dhcp4").unwrap();
+        let script = r#"
+import subprocess,sys
+for args in [
+    ['link','set','lo','up'],
+    ['link','add','lan0','type','dummy'],
+    ['addr','add','192.168.1.1/24','dev','lan0'],
+    ['link','set','lan0','up'],
+    ['link','add','link','lan0','name','vlan2','type','vlan','id','2'],
+    ['addr','add','192.168.2.1/24','dev','vlan2'],
+    ['link','set','vlan2','up'],
+]:
+    subprocess.run(['ip', *args], check=True, timeout=5)
+subprocess.run([sys.argv[2], '-t', sys.argv[1]], check=True, timeout=15)
+"#;
+        let output = std::process::Command::new("unshare")
+            .args(["-n", "python3", "-c", script])
+            .arg(staged.path())
+            .arg(kea)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn test_render_default() {
         let config = make_config_with_pool("192.168.1.0/24", "192.168.1.100", "192.168.1.250");
         let output = render(&config).unwrap();
@@ -382,7 +494,7 @@ mod tests {
         ];
         let output = render(&config).unwrap();
         assert!(output.contains("\"reservations\""));
-        assert!(output.contains("AA:BB:CC:DD:EE:01"));
+        assert!(output.contains("aa:bb:cc:dd:ee:01"));
         assert!(output.contains("192.168.1.10"));
     }
 

@@ -410,10 +410,11 @@ pub(crate) async fn read_firewall_counters() -> HashMap<String, FirewallCounter>
         // Keep collecting rules installed by an older routerd until Apply.
         ("mangle", "prerouting", "prerouting"),
     ] {
-        let Ok(output) = tokio::process::Command::new("nft")
+        let mut command = tokio::process::Command::new("nft");
+        command
             .args(["-j", "list", "chain", "inet", table, chain])
-            .output()
-            .await
+            .kill_on_drop(true);
+        let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(3), command.output()).await
         else {
             continue;
         };

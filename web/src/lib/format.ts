@@ -8,6 +8,9 @@ export function bytes(value: number | undefined, rate = false): string {
   );
   return `${(value / 1024 ** exponent).toLocaleString(undefined, { maximumFractionDigits: exponent ? 1 : 0 })} ${units[exponent]}${rate ? '/s' : ''}`;
 }
+export function macIdentity(value: string): string {
+  return value.replaceAll('-', ':').toLowerCase();
+}
 export function list(value: string): string[] {
   return value
     .split(/[,\s]+/)

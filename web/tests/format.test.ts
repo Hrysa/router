@@ -3,6 +3,7 @@ import {
   bytes,
   formatPort,
   list,
+  macIdentity,
   parsePort,
   passwordError,
   role,
@@ -76,4 +77,9 @@ test('interface role follows routerd inference', () => {
   expect(role({ name: 'br0', method: 'static' })).toBe('LAN');
   expect(role({ name: 'vlan10', method: 'static', vlan_id: 10 })).toBe('VLAN');
   expect(list('eth0, eth1\neth2')).toEqual(['eth0', 'eth1', 'eth2']);
+});
+
+test('MAC identity matches case and separator variants without changing addresses', () => {
+  expect(macIdentity('AA-BB-CC-DD-EE-FF')).toBe(macIdentity('aa:bb:cc:dd:ee:ff'));
+  expect(macIdentity('aa:bb:cc:dd:ee:01')).not.toBe(macIdentity('aa:bb:cc:dd:ee:02'));
 });

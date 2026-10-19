@@ -10,7 +10,7 @@ use std::path::Path;
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Parser, Debug)]
-#[command(name = "routerd", about = "Linux router daemon")]
+#[command(name = "routerd", version, about = "Linux router daemon")]
 struct Args {
     /// Path to config directory (contains config.yml)
     #[arg(short = 'c', long = "config-dir", default_value = "config")]
@@ -204,6 +204,13 @@ fn disable_offloads() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_is_available_without_starting_the_daemon() {
+        let result = Args::try_parse_from(["routerd", "--version"]).unwrap_err();
+        assert_eq!(result.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(result.to_string().contains(env!("CARGO_PKG_VERSION")));
+    }
 
     #[test]
     fn singbox_install_uses_selected_config_directory_and_excludes_startup_modes() {

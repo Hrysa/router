@@ -81,6 +81,13 @@ DHCP reclaimed-lease retention is editable in **DHCP & leases → Lease reclamat
 `dhcp.hold_reclaimed_time` defaults to 3600 seconds (1 hour); 0 disables retention.
 It renders as Kea’s server-wide `expired-leases-processing.hold-reclaimed-time`.
 Save preserves pools and reservations; Apply activates the setting.
+DHCP binds every static internal interface, including VLANs. Each pool's implicit
+gateway comes from an internal interface address inside its subnet before the
+legacy first-LAN fallback; explicit gateway/DNS values are preserved. Validation
+requires IPv4 pool and reservation data, ordered in-subnet ranges, and unique MAC
+identities independent of case and colon/hyphen spelling. Empty domains omit
+option 15. Firewall counter subprocesses have a three-second per-chain timeout.
+
 
 Kea rendering discovers the optional installed `libdhcp_lease_cmds.so` in standard
 multiarch, `/usr/lib`, `/usr/lib64`, and `/usr/local/lib` Kea hooks directories and
@@ -95,17 +102,18 @@ tombstones, reclaimed records, and shortened leases supersede older active rows.
 
 ### systemd-networkd Config Files
 
-All managed files use `50-routerd-` prefix for cleanup:
+Managed networkd filenames use the configured device name and the `50-routerd-`
+prefix. Cleanup is limited to networkd files with this prefix:
 
 | File | Purpose |
 |------|---------|
-| `50-routerd-wan.network` | WAN interface (DHCP/static/PPPoE unmanaged) |
+| `50-routerd-<interface>.network` | WAN interface (DHCP/static/PPPoE unmanaged) |
 | `50-routerd-ppp0.network` | PPPoE tunnel routing (if applicable) |
-| `50-routerd-br-lan.netdev` | Bridge device definition |
-| `50-routerd-br-lan.network` | Bridge static IP |
-| `50-routerd-br-lan-slave.network` | Bridge member ports |
-| `50-routerd-vlan<id>.netdev` | VLAN device definition |
-| `50-routerd-vlan<id>.network` | VLAN DHCP/static configuration (filename uses interface name) |
+| `50-routerd-<bridge>.netdev` | Bridge device definition |
+| `50-routerd-<bridge>.network` | Bridge static IP |
+| `50-routerd-<bridge>-slave.network` | Bridge member ports |
+| `50-routerd-<vlan-name>.netdev` | VLAN device definition |
+| `50-routerd-<vlan-name>.network` | VLAN DHCP/static configuration (filename uses interface name) |
 
 ---
 
@@ -229,6 +237,9 @@ The renderer emits a single JSON transaction. It resets only the four table name
 
 Address conventions: `@setname` references a named set (protocol picked from the set's type), `@local` compiles to a `fib ... type local` match.
 
+Reject defaults render a terminal Reject rule over a Drop base-chain policy;
+Reject is never silently reduced to Drop.
+
 Every rule's comment is `[<id>] <comment>` — `/api/firewall/stats` parses the ID out of `nft -j list chain` output to attach per-rule counters.
 
 Do not share these four tables with other tools: their contents are replaced whenever nftables changes are applied. TPROXY marks select dedicated routing tables; reserved IDs 0, 253, 254, and 255 are rejected. Cleanup removes the matching local route/rule, not the entire routing table.
@@ -256,6 +267,13 @@ The rule-counter reader aggregates protocol variants and forward/proxy-policy
 counters before calculating deltas, while retaining legacy mangle-chain collection
 until the next Apply. No extra mark bits or policy routes are allocated. This
 changes client admission, not sing-box's local-output WAN selection.
+
+TPROXY routing snapshots live IPv4 rules/routes before planning cleanup. It
+removes duplicate unscoped mark/table rules, refuses scoped or foreign-protocol
+collisions, and deletes only removed-mark loopback local defaults at metric 0.
+Unrelated prefixes and nonzero-metric local routes remain. Snapshot, cleanup,
+installation, WAN-policy, and sysctl command failures propagate; these subprocesses
+have 30-second kill-on-drop timeouts. This does not make Apply transactional.
 
 ### System route management
 
@@ -397,84 +415,7 @@ the target server's subnet, its egress interface, and `ct status dnat`, avoiding
 the old broad masquerading of unrelated traffic to the server. DNAT ingress
 remains explicitly controlled by each port forward.
 
-### Authentication and secrets
-
-Public routes are `/api/auth/status`, `/api/auth/setup`, `/api/auth/login`, and SPA assets. Setup succeeds only while the password hash is empty, under the same operation lock as configuration updates. An unset password does not grant API access or allow token issuance. Bcrypt work runs off the async executor; password input is limited to bcrypt's 72-byte maximum.
-
-JWTs expire after 24 hours. Middleware reads the current password state and signing secret on every request, so restoring/replacing a secret takes effect immediately. The management API exposes secrets to authenticated administrators, and hooks execute shell commands by design; it is not a multi-user or restricted-privilege API.
-
-`config.yml`, backups, PPP peers/secrets, WireGuard files, and sing-box API writes use mode `0600`. Temporary secret files start private and are removed on normal cleanup. Kea staging files use `0644` for its privilege-dropping validation. TLS is optional, but the certificate and key CLI flags must be specified together; first-time setup requires a trusted management connection.
-
-## Init Setup (first run)
-
-When `config.yml` doesn't exist, `--init` is required:
-
-```
-routerd --init -c /etc/router
-    │
-    ├── detect interfaces from /sys/class/net/
-    ├── detect WAN: interface with default route
-    ├── select first other interface as draft LAN (192.168.1.1/24)
-    ├── detect WAN method: DHCP lease file → dhcp, else static IP → static
-    ├── write draft config.yml (keep existing file if present)
-    ├── skip offload changes, startup hooks, and automatic apply
-    └── start web UI/API for review and explicit apply
-```
-
-Initialization leaves network managers, service configs, addresses, routes, and firewall rules untouched. This also holds for repeated starts with `--init`. Starting without `--init` or `--boot` uses the partial normal-startup pipeline above; `--boot` instead restores only nftables. The generated configuration is a router draft, not a complete import of the existing network setup.
-
-## Repository Layout
-
-```
-router/
-├── Cargo.toml
-├── config/                 # runtime config (gitignored; default -c target)
-├── sing-box/               # user-managed sing-box files (gitignored)
-├── src/
-│   ├── main.rs             # CLI entry + init flow
-│   ├── config/             # schema, store, validator, diff, init
-│   ├── renderer/           # nftables, kea, interfaces, ppp, wireguard, sysctl
-│   ├── service/            # apply pipeline, manager, rollback, hooks, singbox installer
-│   ├── api/                # axum server, handlers, auth middleware
-│   ├── metrics/            # interface/firewall collection and rolling history
-│   └── auth/               # JWT + password hashing
-└── web/                    # React SPA; dist/ embedded in binary
-```
-
-## Tech Stack
-
-| Component | Choice |
-|-----------|--------|
-| Language | Rust |
-| Web framework | axum |
-| Config | serde + serde_yaml |
-| Async runtime | tokio |
-| CLI | clap |
-| Logging | tracing + tracing-subscriber |
-| Auth | jsonwebtoken + bcrypt |
-| Network backend | systemd-networkd |
-| Firewall | nftables |
-| Embedded assets | rust-embed |
-| SPA | React + Vite + TypeScript + React Query; Yacd-meta-inspired UI |
-
-## Web UI
-
-The frontend reimplements the Yacd-meta React shell, responsive sidebar, card-based overview, and light/dark theme approach for routerd. It does not include the reference project's Clash controllers, backend selector, or service worker. The ignored `git-repos/Yacd-meta/` checkout is a design reference only; production builds do not depend on it.
-
-`web/src/App.tsx` provides hash navigation, authentication gating, live Apply confirmation, and theme preferences. Remote data uses React Query and an abortable same-origin fetch client; logout, token changes, and HTTP 401 clear cached configuration and unmount sensitive editors. Editor drafts remain independent of background queries. Password limits use UTF-8 byte counts, and raw sing-box JSONC is never reformatted by the frontend.
-
-The overview and monitoring pages graph a selected interface rather than summing overlapping bridge/physical counters. `rx_bps` and `tx_bps` from the API are bytes/s. Configuration editors save without applying; startup hooks activate on normal startup. Service controls and backup restores are explicitly confirmed live operations.
-
-`GET /api/config/apply/status` takes the configuration operation lock and compares saved typed configuration, including `singbox.config`, with the last-successful configuration snapshot. Without a successful service snapshot, including first Apply under any startup mode or after a failed/cancelled attempt, it returns `pending: true`. The endpoint only reads in-memory state; it does not read deployed files, render, run syntax checks, control services, or inspect live networking. Same-content saves and saved reversions return `pending: false`. External generated-file or kernel drift and service inactivity are not tracked by this endpoint. The authenticated UI polls every five seconds and invalidates status after successful or failed writes, so other clients' saved changes are detected too. Apply is unavailable for unchanged, loading, refreshing, or failed status checks; explicit API Apply and service controls remain available. Browser-local pending flags are no longer used.
-
-Frontend regression tests live in `web/tests/` and use Bun's built-in runner. Build assets with Bun before compiling Rust; `web/dist/` is generated and ignored. See `web/README.md` for commands and `web/THIRD_PARTY_NOTICES.md` for reference attribution.
-
-`.github/workflows/release.yml` builds and checks the frontend first, then passes
-that run's generated assets to native x86-64 and ARM64 musl release-build jobs.
-Pull requests, main-branch pushes, and manual runs produce downloadable artifacts.
-Version-tag pushes also publish GitHub Releases after all checks/builds succeed,
-with archive checksums and generated release notes. CI does not bundle runtime
-configuration or deploy binaries, control services, or apply router state.
+### Interface MTU and TCP MSS
 
 Interface MTU and TCP MSS settings are independent of WAN/LAN role. Optional
 `interfaces.items[].mtu` sets the device MTU through networkd, including bridge
@@ -604,3 +545,84 @@ that name only when an ingress ownership journal record with the same profile ID
 and IFB name exists, after validating the recorded IFB identity, qdiscs and source
 filters. It then removes the obsolete owned state before creating the replacement.
 A matching name or alias without the journal remains insufficient for adoption.
+
+### Authentication and secrets
+
+Public routes are `/api/auth/status`, `/api/auth/setup`, `/api/auth/login`, and SPA assets. Setup succeeds only while the password hash is empty, under the same operation lock as configuration updates. An unset password does not grant API access or allow token issuance. Bcrypt work runs off the async executor; password input is limited to bcrypt's 72-byte maximum.
+
+JWTs expire after 24 hours. Middleware reads the current password state and signing secret on every request, so restoring/replacing a secret takes effect immediately. The management API exposes secrets to authenticated administrators, and hooks execute shell commands by design; it is not a multi-user or restricted-privilege API.
+
+`config.yml`, backups, PPP peers/secrets, WireGuard files, and sing-box API writes use mode `0600`. Temporary secret files start private and are removed on normal cleanup. Kea staging files use `0644` for its privilege-dropping validation. TLS is optional, but the certificate and key CLI flags must be specified together; first-time setup requires a trusted management connection.
+
+## Init Setup (first run)
+
+When `config.yml` doesn't exist, `--init` is required:
+
+```
+routerd --init -c /etc/router
+    │
+    ├── detect interfaces from /sys/class/net/
+    ├── detect WAN: interface with default route
+    ├── select first other interface as draft LAN (192.168.1.1/24)
+    ├── detect WAN method: DHCP lease file → dhcp, else static IP → static
+    ├── write draft config.yml (keep existing file if present)
+    ├── skip offload changes, startup hooks, and automatic apply
+    └── start web UI/API for review and explicit apply
+```
+
+Initialization leaves network managers, service configs, addresses, routes, and firewall rules untouched. This also holds for repeated starts with `--init`. Starting without `--init` or `--boot` uses the partial normal-startup pipeline above; `--boot` instead restores only nftables. The generated configuration is a router draft, not a complete import of the existing network setup.
+
+## Repository Layout
+
+```
+router/
+├── Cargo.toml
+├── config/                 # runtime config (gitignored; default -c target)
+├── sing-box/               # user-managed sing-box files (gitignored)
+├── src/
+│   ├── main.rs             # CLI entry + init flow
+│   ├── config/             # schema, store, validator, diff, init
+│   ├── renderer/           # nftables, kea, interfaces, ppp, wireguard, sysctl
+│   ├── service/            # apply pipeline, manager, rollback, hooks, singbox installer
+│   ├── api/                # axum server, handlers, auth middleware
+│   ├── metrics/            # interface/firewall collection and rolling history
+│   └── auth/               # JWT + password hashing
+└── web/                    # React SPA; dist/ embedded in binary
+```
+
+## Tech Stack
+
+| Component | Choice |
+|-----------|--------|
+| Language | Rust |
+| Web framework | axum |
+| Config | serde + serde_yaml |
+| Async runtime | tokio |
+| CLI | clap |
+| Logging | tracing + tracing-subscriber |
+| Auth | jsonwebtoken + bcrypt |
+| Network backend | systemd-networkd |
+| Firewall | nftables |
+| Embedded assets | rust-embed |
+| SPA | React + Vite + TypeScript + React Query; Yacd-meta-inspired UI |
+
+## Web UI
+
+The frontend reimplements the Yacd-meta React shell, responsive sidebar, card-based overview, and light/dark theme approach for routerd. It does not include the reference project's Clash controllers, backend selector, or service worker. The ignored `git-repos/Yacd-meta/` checkout is a design reference only; production builds do not depend on it.
+
+`web/src/App.tsx` provides hash navigation, authentication gating, live Apply confirmation, and theme preferences. Remote data uses React Query and an abortable same-origin fetch client; logout, token changes, and HTTP 401 clear cached configuration and unmount sensitive editors. Editor drafts remain independent of background queries. Password limits use UTF-8 byte counts, and raw sing-box JSONC is never reformatted by the frontend.
+
+The overview and monitoring pages graph a selected interface rather than summing overlapping bridge/physical counters. `rx_bps` and `tx_bps` from the API are bytes/s. Configuration editors save without applying; startup hooks activate on normal startup. Service controls and backup restores are explicitly confirmed live operations.
+
+`GET /api/config/apply/status` takes the configuration operation lock and compares saved typed configuration, including `singbox.config`, with the last-successful configuration snapshot. Without a successful service snapshot, including first Apply under any startup mode or after a failed/cancelled attempt, it returns `pending: true`. The endpoint only reads in-memory state; it does not read deployed files, render, run syntax checks, control services, or inspect live networking. Same-content saves and saved reversions return `pending: false`. External generated-file or kernel drift and service inactivity are not tracked by this endpoint. The authenticated UI polls every five seconds and invalidates status after successful or failed writes, so other clients' saved changes are detected too. Apply is unavailable for unchanged, loading, refreshing, or failed status checks; explicit API Apply and service controls remain available. Browser-local pending flags are no longer used.
+
+Frontend regression tests live in `web/tests/` and use Bun's built-in runner. Build assets with Bun before compiling Rust; `web/dist/` is generated and ignored. See `web/README.md` for commands and `web/THIRD_PARTY_NOTICES.md` for reference attribution.
+
+`.github/workflows/release.yml` builds and checks the frontend first, then passes
+that run's generated assets to native x86-64 and ARM64 musl release-build jobs.
+Pull requests, main-branch pushes, and manual runs produce downloadable artifacts.
+A separate Node.js 22/Chromium job runs mocked desktop/mobile browser tests.
+Version-tag pushes also publish GitHub Releases after checks, browser tests, and
+both architecture builds succeed,
+with archive checksums and generated release notes. CI does not bundle runtime
+configuration or deploy binaries, control services, or apply router state.

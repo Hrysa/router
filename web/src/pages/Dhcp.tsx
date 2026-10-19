@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Edit2, Plus, Trash2, Wifi } from 'react-feather';
 import { encoded, getConfig, write } from '../lib/api';
-import { list } from '../lib/format';
+import { list, macIdentity } from '../lib/format';
 import { useApi, useConfig } from '../lib/queries';
 import type { Config, Lease, Pool, Reservation } from '../lib/types';
 import {
@@ -320,7 +320,7 @@ export function Dhcp() {
                   </button>
                   {!reservations.some(
                     (item) =>
-                      item.mac.toLowerCase() === lease.mac.toLowerCase(),
+                      macIdentity(item.mac) === macIdentity(lease.mac),
                   ) && (
                     <button
                       onClick={() =>

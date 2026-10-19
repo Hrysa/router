@@ -61,6 +61,7 @@ const ruleFields: Field[] = [
     type: 'interface',
     placeholder: 'Any',
     hint: 'Match the selected exit interface. This does not choose a route.',
+    when: (values) => values.action !== 'tproxy',
   },
   {
     name: 'route_via',
@@ -81,7 +82,7 @@ const ruleFields: Field[] = [
         ? 'Internal traffic may go to the WAN gateway. To keep a destination reachable directly, add its route to the selected WAN table. Test with a new connection after Apply.'
         : undefined,
   },
-  { name: 'proto', label: 'Protocols', placeholder: 'tcp, udp (empty = any)' },
+  { name: 'proto', label: 'Protocols', placeholder: 'tcp, udp', hint: 'TPROXY supports TCP/UDP only; empty uses TCP. For other actions, empty matches any protocol.' },
   {
     name: 'state',
     label: 'Connection states',
@@ -101,7 +102,7 @@ const ruleFields: Field[] = [
     placeholder: '443, 80 or 8000-8080 or @web',
     hint: 'A port, comma-separated ports, ordered range, or @set.',
   },
-  { name: 'rate', label: 'Rate limit', placeholder: '10/second' },
+  { name: 'rate', label: 'Rate limit', placeholder: '10/second', when: (values) => values.action !== 'tproxy' },
   { name: 'log_prefix', label: 'Log prefix' },
   {
     name: 'mark',
@@ -182,7 +183,7 @@ export function ruleFromValues(
     action,
     comment: text(values, 'comment'),
     interfaces: list(text(values, 'interfaces')),
-    oif: text(values, 'oif') || undefined,
+    oif: action === 'tproxy' ? undefined : text(values, 'oif') || undefined,
     route_via: routeVia,
     preserve_internal_routes: routeVia
       ? values.preserve_internal_routes !== false
@@ -193,7 +194,7 @@ export function ruleFromValues(
     daddr: text(values, 'daddr') || undefined,
     sport: parsePort(text(values, 'sport')),
     dport: parsePort(text(values, 'dport')),
-    rate: text(values, 'rate') || undefined,
+    rate: action === 'tproxy' ? undefined : text(values, 'rate') || undefined,
     log_prefix: text(values, 'log_prefix') || undefined,
     mark,
     tproxy_port:
@@ -274,7 +275,7 @@ const natFields: Field[] = [
     name: 'proto',
     label: 'Protocol',
     type: 'select',
-    options: ['tcp', 'udp', 'tcp+udp', 'icmp', 'gre'],
+    options: ['tcp', 'udp', 'tcp+udp'],
   },
   ingress,
   {

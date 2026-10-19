@@ -268,3 +268,10 @@ test('common device MTU and MSS settings save on LANs and clear independently of
     interfaceFromValues({ ...values, device_mtu: '1279' }),
   ).toThrow();
 });
+
+test('switching an existing rule to TPROXY clears unsupported egress and rate conditions', () => {
+  const rule = ruleFromValues({ action: 'tproxy', interfaces: 'br0', proto: 'tcp', mark: '1', tproxy_port: '12345', oif: 'eth0', rate: '10/second', enabled: true });
+  expect(rule.oif).toBeUndefined();
+  expect(rule.rate).toBeUndefined();
+  expect(rule.proto).toEqual(['tcp']);
+});

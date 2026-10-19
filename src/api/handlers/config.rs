@@ -119,7 +119,7 @@ pub async fn delete_interface(
     }
 }
 
-/// PATCH /api/config/firewall — update firewall section
+/// POST /api/config/firewall — replace firewall section
 pub async fn patch_firewall(
     State(state): State<AppState>,
     Json(patch): Json<Firewall>,
@@ -231,7 +231,7 @@ pub async fn update_firewall_rule(
     Err(ApiError::NotFound(format!("rule id '{}' not found", id)))
 }
 
-/// DELETE /api/config/firewall/rules/:name — delete a firewall rule by name
+/// DELETE /api/config/firewall/rules/:id — delete a firewall rule by ID
 pub async fn delete_firewall_rule(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<u32>,
@@ -469,6 +469,9 @@ pub async fn update_nft_set(
 ) -> Result<Json<Value>, ApiError> {
     let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
+    if set.name != name {
+        return Err(ApiError::BadRequest("set name cannot be changed".into()));
+    }
 
     if let Some(existing) = config.firewall.sets.iter_mut().find(|s| s.name == name) {
         *existing = set;
@@ -558,12 +561,12 @@ fn set_used_by(config: &Config, set_name: &str) -> Option<String> {
 }
 
 fn port_spec_uses_set(spec: &PortSpec, prefix: &str) -> bool {
-    matches!(spec, PortSpec::Set(name) if name == prefix)
+    matches!(spec, PortSpec::Set(name) if name.trim_start_matches('@') == prefix.trim_start_matches('@'))
 }
 
 // ── DHCP CRUD ────────────────────────────────────────────────────────────────
 
-/// PATCH /api/config/dhcp — update DHCP section
+/// POST /api/config/dhcp — replace DHCP section
 pub async fn patch_dhcp(
     State(state): State<AppState>,
     Json(patch): Json<Dhcp>,
@@ -593,12 +596,11 @@ pub async fn add_dhcp_lease(
     let _operation = state.config.lock_operation().await;
     let mut config = state.config.get().await;
 
-    if config
-        .dhcp
-        .static_leases
-        .iter()
-        .any(|l| l.mac == lease.mac || l.ip == lease.ip)
-    {
+    if config.dhcp.static_leases.iter().any(|l| {
+        crate::config::validator::mac_identity(&l.mac)
+            == crate::config::validator::mac_identity(&lease.mac)
+            || l.ip == lease.ip
+    }) {
         return Err(ApiError::Conflict(
             "lease with same MAC or IP already exists".into(),
         ));
@@ -622,7 +624,10 @@ pub async fn delete_dhcp_lease(
     let mut config = state.config.get().await;
 
     let len = config.dhcp.static_leases.len();
-    config.dhcp.static_leases.retain(|l| l.mac != mac);
+    config.dhcp.static_leases.retain(|l| {
+        crate::config::validator::mac_identity(&l.mac)
+            != crate::config::validator::mac_identity(&mac)
+    });
     if config.dhcp.static_leases.len() < len {
         state.config.set(config).await?;
         return Ok(Json(json!({"status": "ok", "deleted": mac})));
@@ -636,7 +641,7 @@ pub async fn delete_dhcp_lease(
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
 
-/// PATCH /api/config/hooks — update hooks section
+/// POST /api/config/hooks — replace hooks section
 pub async fn patch_hooks(
     State(state): State<AppState>,
     Json(patch): Json<Hooks>,
@@ -793,6 +798,64 @@ pub async fn firewall_stats(State(_state): State<AppState>) -> Result<Json<Value
 mod tests {
     use super::*;
     use crate::config::store::tests::TestStore;
+
+    #[tokio::test]
+    async fn set_names_are_immutable_and_port_set_references_accept_both_spellings() {
+        let fixture = TestStore::new();
+        let mut config = fixture.store.get().await;
+        config.firewall.sets.push(
+            serde_json::from_value(
+                json!({"name":"ports", "set_type":"inet_service", "elements":"443"}),
+            )
+            .unwrap(),
+        );
+        fixture.store.set(config.clone()).await.unwrap();
+        let renamed = serde_json::from_value(
+            json!({"name":"renamed", "set_type":"inet_service", "elements":"443"}),
+        )
+        .unwrap();
+        let result = update_nft_set(
+            State(crate::api::handlers::auth::tests::state(
+                fixture.store.clone(),
+            )),
+            axum::extract::Path("ports".into()),
+            Json(renamed),
+        )
+        .await;
+        assert!(matches!(result, Err(ApiError::BadRequest(_))));
+        assert_eq!(fixture.store.get().await, config);
+        for name in ["ports", "@ports"] {
+            assert!(port_spec_uses_set(&PortSpec::Set(name.into()), "@ports"));
+        }
+    }
+
+    #[tokio::test]
+    async fn reservations_compare_mac_case_and_separators_consistently() {
+        let fixture = TestStore::new();
+        let application = crate::api::handlers::auth::tests::state(fixture.store.clone());
+        let lease: StaticLease = serde_json::from_value(
+            json!({"mac":"AA:BB:CC:DD:EE:FF","ip":"192.168.1.10","hostname":"first"}),
+        )
+        .unwrap();
+        let _ = add_dhcp_lease(State(application.clone()), Json(lease))
+            .await
+            .unwrap();
+        let duplicate = serde_json::from_value(
+            json!({"mac":"aa-bb-cc-dd-ee-ff","ip":"192.168.1.11","hostname":"second"}),
+        )
+        .unwrap();
+        assert!(matches!(
+            add_dhcp_lease(State(application.clone()), Json(duplicate)).await,
+            Err(ApiError::Conflict(_))
+        ));
+        let _ = delete_dhcp_lease(
+            State(application),
+            axum::extract::Path("aa-bb-cc-dd-ee-ff".into()),
+        )
+        .await
+        .unwrap();
+        assert!(fixture.store.get().await.dhcp.static_leases.is_empty());
+    }
 
     #[tokio::test]
     async fn singbox_editor_reads_saved_config_and_saves_without_advancing_applied_state() {

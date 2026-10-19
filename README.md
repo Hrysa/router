@@ -24,6 +24,15 @@ DHCP reclaimed-lease retention is editable in **DHCP & leases → Lease reclamat
 It renders as Kea’s server-wide `expired-leases-processing.hold-reclaimed-time`.
 Save preserves pools and reservations; Apply activates the setting.
 
+Kea listens on static internal interfaces, including VLANs. An empty pool gateway
+uses an internal interface address inside that pool's subnet, falling back to the
+first LAN address if none matches. Explicit gateway/DNS overrides are preserved.
+DHCPv4 subnets, ranges, gateways, DNS servers, and reservation addresses require
+IPv4; ranges must be ordered and inside their subnet. MAC identities compare
+case-insensitively with colon/hyphen normalization. A blank domain name omits
+DHCP option 15 instead of sending an invalid empty value.
+
+
 Active lease rows offer **Delete**, with confirmation. This takes effect immediately,
 without Apply, and preserves saved reservations. Disconnect the client first:
 deleting the server record does not revoke the client's address, which Kea can
@@ -54,7 +63,7 @@ bun run build
 cd ..
 
 # Build the daemon
-cargo build --release
+cargo build --locked --release
 ```
 
 ### Automated builds and releases
@@ -65,7 +74,9 @@ dependencies from the frozen Bun lockfile, runs frontend tests/type checks,
 builds `web/dist/`, then runs Rust tests, Clippy, and formatting checks. Binary
 jobs download that exact UI build before compiling it into the release binaries.
 
-Successful builds produce Linux x86-64 and ARM64 musl archives with embedded UI,
+Desktop/mobile browser regressions run against the built UI with intercepted APIs
+and must pass before publication. Successful builds produce Linux x86-64 and
+ARM64 musl archives with embedded UI,
 README/architecture documentation, and SHA-256 checksums. Download them from the
 workflow's artifacts; no separate web directory is needed. The archives contain
 no runtime configuration, credentials, sing-box binary, or system service changes.
@@ -81,7 +92,7 @@ git push origin v0.1.0
 
 Choose a new version tag for each release and update the Cargo package version
 when appropriate. A tag containing `-`, such as `v0.2.0-rc.1`, publishes a
-prerelease. Publication waits for checks and both binary builds, then verifies
+prerelease. Publication waits for checks, browser tests, and both binary builds, then verifies
 archive checksums and uploads assets using the built-in `GITHUB_TOKEN`; no
 additional publishing secret is required. Manual **Run workflow** builds artifacts
 without publishing a release. The workflow never deploys to a router.
@@ -290,6 +301,11 @@ Router-owned addresses, DNAT/hairpin and TPROXY remain excluded in either mode.
 The mode is pinned per connection; test changes with a new connection. Replies
 route normally back to clients.
 
+TPROXY route reconciliation reads current IPv4 rules/routes before cleanup. It
+refuses scoped or foreign policy-rule collisions, propagates cleanup failures, and
+preserves unrelated prefixes and nonzero-metric local routes. Routing/sysctl
+commands have 30-second timeouts; Apply remains nontransactional.
+
 Targets must have WAN return routing enabled. WAN selection cannot be combined
 with an egress-interface match or rate limit; a connection-state filter must include
 `new` or be empty. Address filters must use IPv4 addresses/subnets or IPv4 named
@@ -321,6 +337,12 @@ Previously installed custom nftables tables and policy rules are not removed by
 routerd. Review old workaround scripts/rules separately when migrating, with
 console access available; applying network configuration is not transactional.
 
+Default firewall policies support Accept, Drop, and Reject. Reject uses a final
+reject rule with a Drop base-chain policy; permitted and established/related
+traffic retains the existing rule order. Port forwards support TCP, UDP, and
+TCP+UDP; source/destination filters accept IPv4 subnets or named IPv4 sets, while
+the translated target must be a single IPv4 address. Named-set names are immutable.
+
 ## Proxy eligibility before transparent proxying
 
 TPROXY candidates now pass the ordered forward access policy before interception.
@@ -346,158 +368,7 @@ normal input rules. Counters sum ordinary forwarding and proxy admission under
 the same rule IDs. Sing-box's new outbound connections still traverse output;
 this change does not add local-output WAN selection or failover.
 
-## CLI Options
-
-```
-routerd [OPTIONS]
-
-Options:
-  -c, --config-dir <DIR>   Config directory [default: config]
-      --listen <ADDR>      API server listen address [default: 0.0.0.0:8443]
-      --log-level <LEVEL>  Log level: trace, debug, info, warn, error [default: info]
-      --log-format <FMT>   Log format: text, json [default: text]
-      --init               Create config if missing; start UI/API without changing networking
-      --boot               Check/install only nftables, then start UI/API
-      --tls-cert <PATH>    TLS certificate (PEM)
-      --tls-key <PATH>     TLS private key (PEM)
-      --install-singbox    Overwrite sing-box config/unit, run daemon-reload, then exit; no download
-  -h, --help               Print help
-```
-
-## API Endpoints
-
-All routes listed below require `Authorization: Bearer <token>`, except the three authentication routes. Saving configuration does not apply it; use `/api/config/apply` explicitly.
-
-### Authentication
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/auth/status` | Whether an admin password exists |
-| POST | `/api/auth/setup` | First-time password setup (only while unset) |
-| POST | `/api/auth/login` | Verify password and issue JWT |
-
-### Status
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/status` | Aggregated system status |
-| GET | `/api/status/system` | Cumulative CPU counters and memory usage |
-
-### Config
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/config` | Get full config |
-| PUT | `/api/config` | Replace full config |
-| GET / POST | `/api/config/interfaces` | List / create an interface |
-| PUT / DELETE | `/api/config/interfaces/:name` | Update / delete an interface |
-| GET / PUT | `/api/config/routing` | Get route settings/resolved WAN tables / replace routing section |
-| POST | `/api/config/routing/routes` | Create a route (server assigns ID) |
-| PUT / DELETE | `/api/config/routing/routes/:id` | Update / delete a saved route |
-| POST | `/api/config/firewall` | Update firewall rules |
-| GET / POST | `/api/config/firewall/rules` | List / create input or forward rules |
-| PUT / DELETE | `/api/config/firewall/rules/:id` | Update / delete a rule |
-| POST | `/api/config/firewall/rules/:id/move` | Move rule up or down |
-| GET | `/api/config/firewall/nat` | List NAT configuration |
-| POST | `/api/config/firewall/nat/port-forward` | Create a port forward |
-| PUT / DELETE | `/api/config/firewall/nat/port-forward/:id` | Update / delete a port forward |
-| GET / POST | `/api/config/firewall/sets` | List / create named sets |
-| PUT / DELETE | `/api/config/firewall/sets/:name` | Update / delete a named set |
-| POST | `/api/config/dhcp` | Update DHCP config |
-| GET / POST | `/api/config/dhcp/leases` | List / create static DHCP leases |
-| DELETE | `/api/config/dhcp/leases/:mac` | Delete a static lease |
-| POST | `/api/config/hooks` | Replace lifecycle hooks |
-| GET / PUT | `/api/singbox/config` | GET saved `{raw}`; PUT raw JSONC into `config.yml` without deploying |
-| POST | `/api/config/validate` | Validate config |
-| GET | `/api/config/apply/status` | Read saved-versus-applied status (`pending`) |
-| POST | `/api/config/apply` | Apply config |
-| POST | `/api/config/rollback` | Rollback to last backup |
-| GET | `/api/config/backups` | List backups |
-| POST | `/api/config/backups/:id/restore` | Restore backup |
-
-### Services
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/services` | List all services |
-| GET | `/api/service/:name/status` | Service status |
-| POST | `/api/service/:name/start` | Start service |
-| POST | `/api/service/:name/stop` | Stop service |
-| POST | `/api/service/:name/restart` | Restart service |
-
-### Monitoring
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/monitor/system` | System stats |
-| GET | `/api/monitor/interfaces` | Interface status |
-| GET | `/api/monitor/routes` | Read live IPv4/IPv6 routes across all kernel tables |
-| GET | `/api/monitor/traffic` | Traffic stats |
-| GET | `/api/monitor/connections` | Conntrack table |
-| GET | `/api/monitor/leases` | DHCP leases |
-| DELETE | `/api/dhcp/leases/:address` | Immediately delete an active IPv4 lease through Kea |
-| GET | `/api/metrics` | Interface/firewall time series (2-second samples, up to 30 minutes) |
-| GET | `/api/metrics/current` | Latest collected sample |
-| GET | `/api/firewall/stats` | Per-rule nftables counters |
-
-## Config Directory
-
-All configuration lives in a directory (default: `./config/` or `/etc/router/`):
-
-```
-config/
-├── config.yml      # Main config (API server owns this)
-└── backups/        # Automatic timestamped backups
-```
-
-Service configs generated from `config.yml`:
-- `/etc/systemd/network/50-routerd-*.network` — systemd-networkd
-- `/etc/systemd/network/50-routerd-*.netdev` — bridges and VLANs
-- `/etc/kea/kea-dhcp4.conf` — Kea DHCPv4 (`kea-dhcp4-server`)
-- `/etc/ppp/ip-up.d/50-routerd-wan-routing` — executable PPP IPv4 return-route hook (`0700`)
-- `/etc/ppp/peers/isp` and `/etc/ppp/chap-secrets` — PPPoE, managed through `ppp@isp.service` (requires the distribution’s `ppp@.service` template)
-- `/etc/wireguard/wg0.conf` — WireGuard
-- `/etc/sysctl.d/90-routerd.conf` — kernel network settings
-- `/etc/sing-box/config.jsonc` — raw `singbox.config` JSONC, written on explicit full Apply or `--install-singbox` setup
-
-nftables is rendered as JSON and applied with `nft -j -f`; no `/etc/nftables.conf` is generated. Routerd replaces only its four owned tables (`inet filter`, `ip nat`, `inet mangle`, `inet blackhole`); do not place unrelated rules in those tables. Other nftables tables are preserved. Normal startup leaves live rules untouched; use `--boot` to restore saved rules after reboot. After a successful full Apply, unchanged rendered rules are skipped on subsequent applies, preserving their counters. `--boot`, the first explicit full Apply in a process (regardless of startup mode), and forced backup restores always install the rules. Required syntax validation runs for each of these firewall operations. This in-memory comparison does not detect external modifications to live nftables tables.
-
-sing-box JSONC is stored verbatim in `config.yml` under `singbox.config`, preserving comments and whitespace and including it in routerd backups/restores:
-
-```yaml
-singbox:
-  config: |
-    {
-      // Preserved in the deployed file
-      "log": { "level": "info" }
-    }
-```
-
-`GET /api/singbox/config` reads this saved value, not `/etc/sing-box/config.jsonc`. `PUT` accepts raw JSONC, checks it with `sing-box check` when installed, and saves only `config.yml`; neither the deployed file nor the service changes until explicit full Apply. Full Apply validates again, compares the saved JSONC with the deployed file and last successful snapshot, atomically writes `/etc/sing-box/config.jsonc` at `0600` when needed, then restarts an active service on change or first/forced Apply, or starts it if inactive. Missing deployed files are recreated; other read errors and all configured-service failures propagate. Direct deployed-file edits are overwritten by the saved value on explicit Apply, not imported into routerd.
-
-Existing configurations without a `singbox` section remain valid and leave the deployed file/service unmanaged. To migrate, paste the existing `/etc/sing-box/config.jsonc` contents into the WebUI sing-box editor and Save before Apply; there is no automatic import. Empty `singbox.config` is rejected. Omitting the whole section leaves existing deployed files/services untouched, including when restoring an older backup without that section. All startup modes still skip sing-box deployment/control; systemd manages its boot lifecycle. The service-content snapshot is published only after complete full-Apply success; failures/cancellation leave retry available. Neither normal startup nor firewall-only `--boot` publishes a full-Apply snapshot.
-
-The authoritative schema is `src/config/schema.rs`; validation lives in `src/config/validator.rs`. The runtime `config/` directory is gitignored, not a checked-in schema/example. Section updates replace that section rather than merging individual fields.
-
-The WebUI polls `GET /api/config/apply/status` every five seconds and refreshes it after writes. The read-only endpoint compares saved typed configuration, including `singbox.config`, with the last successful in-process Apply. It does not read the deployed JSONC file. Apply is disabled when unchanged, while checking status, or if status cannot be read; first applies and retries after failed applies remain available. Same-content saves and saved reversions do not require Apply. This tracks saved-versus-applied configuration, not unsaved editor drafts, external edits to generated service files, or live service/kernel health; use explicit API Apply to reconcile generated-file drift and service controls for live recovery. Startup hooks still require normal daemon startup. The API Apply endpoint remains available for explicit reconciliation.
-
-## Development
-
-```bash
-# Run tests
-cargo test
-
-# Run with debug logging
-RUST_LOG=debug cargo run -- --init -c config --listen 127.0.0.1:8443
-
-# Check code
-cargo clippy --locked --all-targets -- -D warnings
-cargo fmt --all -- --check
-
-# UI validation and embedded asset refresh after web changes
-cd web && bun run test && bun run check && bun run build
-```
-
-The development Vite proxy has a router-specific address in `web/vite.config.ts`; set it to your backend before using `bun run dev`. The dev server binds to loopback by default. See `web/README.md` for the frontend workflow and Yacd-meta design attribution.
-
-## License
-
-MIT
+## Interface MTU and TCP MSS
 
 Interface MTU and TCP MSS settings are independent of WAN/LAN role. Optional
 `interfaces.items[].mtu` sets the device MTU through networkd, including bridge
@@ -518,7 +389,7 @@ with an explicit device MTU is managed by networkd without DHCP or link-local
 addressing so that the MTU can be applied. WebUI settings are under Interfaces →
 Edit; Save and Apply remain separate. No MTU or MSS value is inferred from WAN role.
 
-### Traffic shaping
+## Traffic shaping
 
 The **Traffic shaping** page configures CAKE shared upload/download rates per
 interface, with NAT-aware per-IP/flow fairness. New profiles are disabled. Enter
@@ -557,7 +428,7 @@ manual service controls wait only for job submission, not for dialing or reconne
 Submission errors still fail the request; later connection failures are reported by
 service status and the PPP journal. Successful Apply does not imply PPP connectivity.
 
-### WAN groups
+## WAN groups
 
 The **WAN Groups** page combines tiered failover with weighted source-IP modulo selection
 for IPv4 forwarded traffic. Members reference configured WAN interface names
@@ -632,3 +503,164 @@ validates the previous ownership record, removes the old owned shaping state,
 and recreates it on the selected interface. PPP interface-index changes follow
 the same cleanup path. Unjournalled IFBs and foreign queues/filters remain
 conflicts and are never adopted merely by matching a name.
+
+## CLI Options
+
+```
+routerd [OPTIONS]
+
+Options:
+  -c, --config-dir <DIR>   Config directory [default: config]
+      --listen <ADDR>      API server listen address [default: 0.0.0.0:8443]
+      --log-level <LEVEL>  Log level: trace, debug, info, warn, error [default: info]
+      --log-format <FMT>   Log format: text, json [default: text]
+      --init               Create config if missing; start UI/API without changing networking
+      --boot               Check/install only nftables, then start UI/API
+      --tls-cert <PATH>    TLS certificate (PEM)
+      --tls-key <PATH>     TLS private key (PEM)
+      --install-singbox    Overwrite sing-box config/unit, run daemon-reload, then exit; no download
+  -h, --help               Print help
+  -V, --version            Print package version and exit
+```
+
+## API Endpoints
+
+All routes listed below require `Authorization: Bearer <token>`, except the three authentication routes. Saving configuration does not apply it; use `/api/config/apply` explicitly.
+
+### Authentication
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/auth/status` | Whether an admin password exists |
+| POST | `/api/auth/setup` | First-time password setup (only while unset) |
+| POST | `/api/auth/login` | Verify password and issue JWT |
+
+### Status
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/status` | Aggregated system status |
+| GET | `/api/status/system` | Cumulative CPU counters and memory usage |
+
+### Config
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/config` | Get full config |
+| PUT | `/api/config` | Replace full config |
+| GET / POST | `/api/config/interfaces` | List / create an interface |
+| PUT / DELETE | `/api/config/interfaces/:name` | Update / delete an interface |
+| GET / PUT | `/api/config/routing` | Get route settings/resolved WAN tables / replace routing section |
+| POST | `/api/config/routing/routes` | Create a route (server assigns ID) |
+| PUT / DELETE | `/api/config/routing/routes/:id` | Update / delete a saved route |
+| POST | `/api/config/firewall` | Update firewall rules |
+| GET / POST | `/api/config/firewall/rules` | List / create input or forward rules |
+| PUT / DELETE | `/api/config/firewall/rules/:id` | Update / delete a rule |
+| POST | `/api/config/firewall/rules/:id/move` | Move rule up or down |
+| GET | `/api/config/firewall/nat` | List NAT configuration |
+| POST | `/api/config/firewall/nat/port-forward` | Create a port forward |
+| PUT / DELETE | `/api/config/firewall/nat/port-forward/:id` | Update / delete a port forward |
+| GET / POST | `/api/config/firewall/sets` | List / create named sets |
+| PUT / DELETE | `/api/config/firewall/sets/:name` | Update / delete a named set |
+| POST | `/api/config/dhcp` | Update DHCP config |
+| GET / POST | `/api/config/dhcp/leases` | List / create static DHCP leases |
+| DELETE | `/api/config/dhcp/leases/:mac` | Delete a static lease |
+| POST | `/api/config/hooks` | Replace lifecycle hooks |
+| GET / PUT | `/api/singbox/config` | GET saved `{raw}`; PUT raw JSONC into `config.yml` without deploying |
+| POST | `/api/config/validate` | Validate config |
+| GET | `/api/config/apply/status` | Read saved-versus-applied status (`pending`) |
+| POST | `/api/config/apply` | Apply config |
+| POST | `/api/config/rollback` | Rollback to last backup |
+| GET | `/api/config/backups` | List backups |
+| POST | `/api/config/backups/:id/restore` | Restore backup |
+
+### Services
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/services` | List all services |
+| GET | `/api/service/:name/status` | Service status |
+| POST | `/api/service/:name/start` | Start service |
+| POST | `/api/service/:name/stop` | Stop service |
+| POST | `/api/service/:name/restart` | Restart service |
+
+### Monitoring
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/monitor/system` | System stats |
+| GET | `/api/monitor/interfaces` | Interface status |
+| GET | `/api/monitor/routes` | Read live IPv4/IPv6 routes across all kernel tables |
+| GET | `/api/monitor/traffic` | Placeholder; use `/api/metrics` for traffic |
+| GET | `/api/monitor/connections` | Placeholder; no live connection list |
+| GET | `/api/monitor/leases` | DHCP leases |
+| DELETE | `/api/dhcp/leases/:address` | Immediately delete an active IPv4 lease through Kea |
+| GET | `/api/metrics` | Interface/firewall time series (2-second samples, up to 30 minutes) |
+| GET | `/api/metrics/current` | Latest collected sample |
+| GET | `/api/firewall/stats` | Per-rule nftables counters |
+
+## Config Directory
+
+All configuration lives in a directory (default: `./config/` or `/etc/router/`):
+
+```
+config/
+├── config.yml      # Main config (API server owns this)
+└── backups/        # Automatic timestamped backups
+```
+
+Service configs generated from `config.yml`:
+- `/etc/systemd/network/50-routerd-*.network` — systemd-networkd
+- `/etc/systemd/network/50-routerd-*.netdev` — bridges and VLANs
+- `/etc/kea/kea-dhcp4.conf` — Kea DHCPv4 (`kea-dhcp4-server`)
+- `/etc/ppp/ip-up.d/50-routerd-wan-routing` — executable PPP IPv4 return-route hook (`0700`)
+- `/etc/ppp/peers/isp` and `/etc/ppp/chap-secrets` — PPPoE, managed through `ppp@isp.service` (requires the distribution’s `ppp@.service` template)
+- `/etc/wireguard/wg0.conf` — WireGuard
+- `/etc/sysctl.d/90-routerd.conf` — kernel network settings
+- `/etc/sing-box/config.jsonc` — raw `singbox.config` JSONC, written on explicit full Apply or `--install-singbox` setup
+
+nftables is rendered as JSON and applied with `nft -j -f`; no `/etc/nftables.conf` is generated. Routerd replaces only its four owned tables (`inet filter`, `ip nat`, `inet mangle`, `inet blackhole`); do not place unrelated rules in those tables. Other nftables tables are preserved. Normal startup leaves live rules untouched; use `--boot` to restore saved rules after reboot. After a successful full Apply, unchanged rendered rules are skipped on subsequent applies, preserving their counters. `--boot`, the first explicit full Apply in a process (regardless of startup mode), and forced backup restores always install the rules. Required syntax validation runs for each of these firewall operations. This in-memory comparison does not detect external modifications to live nftables tables.
+
+sing-box JSONC is stored verbatim in `config.yml` under `singbox.config`, preserving comments and whitespace and including it in routerd backups/restores:
+
+```yaml
+singbox:
+  config: |
+    {
+      // Preserved in the deployed file
+      "log": { "level": "info" }
+    }
+```
+
+`GET /api/singbox/config` reads this saved value, not `/etc/sing-box/config.jsonc`. `PUT` accepts raw JSONC, checks it with `sing-box check` when installed, and saves only `config.yml`; neither the deployed file nor the service changes until explicit full Apply. Full Apply validates again, compares the saved JSONC with the deployed file and last successful snapshot, atomically writes `/etc/sing-box/config.jsonc` at `0600` when needed, then restarts an active service on change or first/forced Apply, or starts it if inactive. Missing deployed files are recreated; other read errors and all configured-service failures propagate. Direct deployed-file edits are overwritten by the saved value on explicit Apply, not imported into routerd.
+
+Routerd's WAN-selection rules apply to forwarded client traffic; sing-box opens
+its upstream connections locally through output. To let saved system routes choose
+the WAN for those servers, disable sing-box `route.auto_detect_interface` and leave
+outbound interface binding unset. An explicit `bind_interface` instead constrains
+that outbound to the selected device. Static server routes do not provide health
+checks or automatic failover.
+
+Existing configurations without a `singbox` section remain valid and leave the deployed file/service unmanaged. To migrate, paste the existing `/etc/sing-box/config.jsonc` contents into the WebUI sing-box editor and Save before Apply; there is no automatic import. Empty `singbox.config` is rejected. Omitting the whole section leaves existing deployed files/services untouched, including when restoring an older backup without that section. All startup modes still skip sing-box deployment/control; systemd manages its boot lifecycle. The service-content snapshot is published only after complete full-Apply success; failures/cancellation leave retry available. Neither normal startup nor firewall-only `--boot` publishes a full-Apply snapshot.
+
+The authoritative schema is `src/config/schema.rs`; validation lives in `src/config/validator.rs`. The runtime `config/` directory is gitignored, not a checked-in schema/example. Section updates replace that section rather than merging individual fields.
+
+The WebUI polls `GET /api/config/apply/status` every five seconds and refreshes it after writes. The read-only endpoint compares saved typed configuration, including `singbox.config`, with the last successful in-process Apply. It does not read the deployed JSONC file. Apply is disabled when unchanged, while checking status, or if status cannot be read; first applies and retries after failed applies remain available. Same-content saves and saved reversions do not require Apply. This tracks saved-versus-applied configuration, not unsaved editor drafts, external edits to generated service files, or live service/kernel health; use explicit API Apply to reconcile generated-file drift and service controls for live recovery. Startup hooks still require normal daemon startup. The API Apply endpoint remains available for explicit reconciliation.
+
+## Development
+
+```bash
+# Run tests
+cargo test --locked
+
+# Run with debug logging
+RUST_LOG=debug cargo run -- --init -c /tmp/routerd-dev --listen 127.0.0.1:8443
+
+# Check code
+cargo clippy --locked --all-targets -- -D warnings
+cargo fmt --all -- --check
+
+# UI validation and embedded asset refresh after web changes
+cd web && bun run test && bun run check && bun run build
+```
+
+The development Vite proxy has a router-specific address in `web/vite.config.ts`; set it to your backend before using `bun run dev`. The dev server binds to loopback by default. See `web/README.md` for the frontend workflow and Yacd-meta design attribution.
+
+## License
+
+MIT

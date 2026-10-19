@@ -273,7 +273,7 @@ async fn spa_handler(uri: axum::http::Uri) -> impl axum::response::IntoResponse 
     serve_file("index.html").unwrap_or_else(|| {
         (
             axum::http::StatusCode::NOT_FOUND,
-            "SPA not built. Run: cd web && npm run build",
+            "SPA not built. Run: cd web && bun run build",
         )
             .into_response()
     })

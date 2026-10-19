@@ -817,6 +817,24 @@ fn render_filter_table(config: &Config, routes: &[WanReturnRoute<'_>], doc: &mut
         Some(0),
         Some(policy_from_str(&config.firewall.default_policy.output)),
     ));
+
+    // nft base-chain policies support accept/drop only. A configured Reject
+    // default needs a terminal rule, with a fail-closed Drop base policy.
+    for (chain, policy) in [
+        ("input", &config.firewall.default_policy.input),
+        ("forward", &config.firewall.default_policy.forward),
+        ("output", &config.firewall.default_policy.output),
+    ] {
+        if policy == "reject" {
+            doc.objects.push(add_rule(
+                NfFamily::INet,
+                "filter",
+                chain,
+                vec![Statement::Reject(None)],
+                Some("routerd default reject"),
+            ));
+        }
+    }
 }
 
 fn render_nft_set(
@@ -1946,10 +1964,28 @@ mod tests {
             0o600,
         )
         .unwrap();
+        let mut rejecting = proxy_policy_config();
+        rejecting.firewall.default_policy.input = "reject".into();
+        rejecting.firewall.default_policy.forward = "reject".into();
+        let reject_staged = crate::service::files::StagedFile::new(
+            directory.path(),
+            render(&rejecting).unwrap().as_bytes(),
+            0o600,
+        )
+        .unwrap();
+        rejecting.firewall.default_policy.output = "reject".into();
+        let check_staged = crate::service::files::StagedFile::new(
+            directory.path(),
+            render(&rejecting).unwrap().as_bytes(),
+            0o600,
+        )
+        .unwrap();
         let output = std::process::Command::new("unshare")
             .args(["-n", "python3", "-c", include_str!("tproxy_native.py")])
             .arg(staged.path())
             .arg(accept_staged.path())
+            .arg(reject_staged.path())
+            .arg(check_staged.path())
             .output()
             .unwrap();
         assert!(
@@ -2413,6 +2449,27 @@ for family, address, cap in [(socket.AF_INET, '127.0.0.1', 1452), (socket.AF_INE
                     .count()
             })
             .unwrap_or(0)
+    }
+
+    #[test]
+    fn reject_defaults_render_terminal_reject_with_drop_base_policy() {
+        let mut config = proxy_policy_config();
+        config.firewall.default_policy.input = "reject".into();
+        config.firewall.default_policy.forward = "reject".into();
+        config.firewall.default_policy.output = "reject".into();
+        let value = render_json(&config);
+        for name in ["input", "forward", "output"] {
+            let rules = rules_in_chain(&value, "filter", name);
+            assert_eq!(
+                rules.last().unwrap()["expr"],
+                serde_json::json!([{"reject":null}])
+            );
+        }
+        let policy = rules_in_chain(&value, "filter", "tproxy_policy");
+        assert_eq!(
+            policy.last().unwrap()["expr"],
+            serde_json::json!([{"accept":null}])
+        );
     }
 
     #[test]

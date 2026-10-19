@@ -588,7 +588,7 @@ export function Firewall() {
               name,
               label: `${name[0].toUpperCase()}${name.slice(1)} policy`,
               type: 'select' as const,
-              options: ['accept', 'drop'],
+              options: ['accept', 'drop', 'reject'],
             })),
             {
               name: 'masquerade',

@@ -110,6 +110,12 @@ s.close()
     connection, _ = listener.accept()
     connection.close()
 
+    # Reject is a real terminal verdict, not an accidental Drop policy.
+    run("nft", "-j", "-c", "-f", sys.argv[4])
+    run("nft", "-j", "-f", sys.argv[3])
+    rejected = json.loads(client_run("python3", "-c", query, "86"))
+    assert rejected["result"] != 0 and rejected["elapsed"] < 0.4, rejected
+
     # Router-owned destinations keep input policy; the proxy-delivery exception
     # must not open local services just because a proxy mark/socket is present.
     run("ip", "addr", "add", "198.18.0.1/32", "dev", "lo")

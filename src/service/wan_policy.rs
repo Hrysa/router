@@ -1,5 +1,6 @@
 //! Global policy rules for WAN selection that deliberately bypasses internal routes.
 //! These rules outlive WAN links; an unreachable companion prevents main-table fallback.
+use super::manager::CommandExt;
 use crate::config::{
     routing::{wan_return_routes, WAN_MARK_MASK},
     schema::Action,
@@ -7,6 +8,7 @@ use crate::config::{
 };
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
+use std::time::Duration;
 use tokio::process::Command;
 
 const LOOKUP_PRIORITY: u32 = 90;
@@ -191,7 +193,7 @@ fn cleanup_plan(removed: &[Policy], live: &[Value]) -> Result<Vec<Vec<String>>> 
 async fn snapshot(ip: &str) -> Result<Vec<Value>> {
     let output = Command::new(ip)
         .args(["-j", "-4", "-N", "-d", "rule", "show"])
-        .output()
+        .timeout_run(Duration::from_secs(30))
         .await?;
     if !output.status.success() {
         bail!(
@@ -204,7 +206,10 @@ async fn snapshot(ip: &str) -> Result<Vec<Value>> {
 
 async fn execute(ip: &str, commands: Vec<Vec<String>>) -> Result<()> {
     for args in commands {
-        let output = Command::new(ip).args(&args).output().await?;
+        let output = Command::new(ip)
+            .args(&args)
+            .timeout_run(Duration::from_secs(30))
+            .await?;
         if !output.status.success() {
             bail!(
                 "WAN policy operation {:?} failed: {}",

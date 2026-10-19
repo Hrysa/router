@@ -230,82 +230,83 @@ fn validate_interfaces(config: &Config, errors: &mut Vec<ValidationError>) {
 }
 
 fn validate_dhcp(config: &Config, errors: &mut Vec<ValidationError>) {
-    // Validate pools
-    for (i, pool) in config.dhcp.pools.iter().enumerate() {
+    use std::net::Ipv4Addr;
+    let mut names = std::collections::HashSet::new();
+    for (index, pool) in config.dhcp.pools.iter().enumerate() {
+        let prefix = format!("dhcp.pools[{index}]");
+        let mut error = |field: &str, message: &str| {
+            errors.push(ValidationError {
+                field: format!("{prefix}.{field}"),
+                message: message.into(),
+            })
+        };
+        if pool.name.trim().is_empty() || !names.insert(&pool.name) {
+            error("name", "pool names must be nonempty and unique");
+        }
         if super::schema::lease_duration_seconds(&pool.lease_time).is_none() {
-            errors.push(ValidationError { field: format!("dhcp.pools[{}].lease_time", i), message: "lease time must be positive seconds or an s/m/h/d duration, with a maximum of 2147483647 seconds".into() });
+            error("lease_time", "lease time must be positive seconds or an s/m/h/d duration, with a maximum of 2147483647 seconds");
         }
-        if pool.name.is_empty() {
+        let subnet = super::static_routes::destination(&pool.subnet)
+            .ok()
+            .and_then(|(network, prefix)| match network {
+                IpAddr::V4(network) => Some((u32::from(network), prefix)),
+                IpAddr::V6(_) => None,
+            });
+        if subnet.is_none() {
+            error("subnet", "Kea DHCPv4 requires an IPv4 subnet");
+        }
+        let start = pool.range.start.parse::<Ipv4Addr>().ok();
+        let end = pool.range.end.parse::<Ipv4Addr>().ok();
+        for (field, address) in [("range.start", start), ("range.end", end)] {
+            match address {
+                None => error(field, "must be an IPv4 address"),
+                Some(address) => {
+                    if let Some((network, prefix)) = subnet {
+                        let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+                        if u32::from(address) & mask != network {
+                            error(field, "address must be inside the pool subnet");
+                        }
+                    }
+                }
+            }
+        }
+        if start.zip(end).is_some_and(|(start, end)| start > end) {
+            error("range", "first address must not exceed last address");
+        }
+        if !pool.gateway.is_empty() && pool.gateway.parse::<Ipv4Addr>().is_err() {
+            error(
+                "gateway",
+                "gateway must be an IPv4 address or empty for the LAN default",
+            );
+        }
+        if pool
+            .dns_servers
+            .iter()
+            .any(|server| server.parse::<Ipv4Addr>().is_err())
+        {
+            error("dns_servers", "DHCPv4 DNS servers must be IPv4 addresses");
+        }
+    }
+    let mut ips = std::collections::HashSet::new();
+    let mut macs = std::collections::HashSet::new();
+    for (index, lease) in config.dhcp.static_leases.iter().enumerate() {
+        if !is_valid_mac(&lease.mac) || !macs.insert(mac_identity(&lease.mac)) {
             errors.push(ValidationError {
-                field: format!("dhcp.pools[{}].name", i),
-                message: "pool name cannot be empty".into(),
+                field: format!("dhcp.static_leases[{index}].mac"),
+                message: "invalid or duplicate reservation MAC address (case-insensitive)".into(),
             });
         }
-        if pool.subnet.is_empty() {
+        if lease.ip.parse::<Ipv4Addr>().is_err() || !ips.insert(&lease.ip) {
             errors.push(ValidationError {
-                field: format!("dhcp.pools[{}].subnet", i),
-                message: "pool subnet cannot be empty".into(),
-            });
-        } else if !is_valid_cidr(&pool.subnet) {
-            errors.push(ValidationError {
-                field: format!("dhcp.pools[{}].subnet", i),
-                message: format!(
-                    "invalid CIDR: {}, expected format like 192.168.1.0/24",
-                    pool.subnet
-                ),
-            });
-        }
-        if !is_valid_ip(&pool.range.start) {
-            errors.push(ValidationError {
-                field: format!("dhcp.pools[{}].range.start", i),
-                message: format!("invalid IP: {}", pool.range.start),
-            });
-        }
-        if !is_valid_ip(&pool.range.end) {
-            errors.push(ValidationError {
-                field: format!("dhcp.pools[{}].range.end", i),
-                message: format!("invalid IP: {}", pool.range.end),
+                field: format!("dhcp.static_leases[{index}].ip"),
+                message: "invalid or duplicate reservation IPv4 address".into(),
             });
         }
     }
+}
 
-    // Check for duplicate pool names
-    let mut seen_names = std::collections::HashSet::new();
-    for (i, pool) in config.dhcp.pools.iter().enumerate() {
-        if !seen_names.insert(&pool.name) {
-            errors.push(ValidationError {
-                field: format!("dhcp.pools[{}].name", i),
-                message: format!("duplicate pool name: {}", pool.name),
-            });
-        }
-    }
-
-    // Validate static leases
-    for (i, lease) in config.dhcp.static_leases.iter().enumerate() {
-        if !is_valid_mac(&lease.mac) {
-            errors.push(ValidationError {
-                field: format!("dhcp.static_leases[{}].mac", i),
-                message: format!("invalid MAC: {}", lease.mac),
-            });
-        }
-        if !is_valid_ip(&lease.ip) {
-            errors.push(ValidationError {
-                field: format!("dhcp.static_leases[{}].ip", i),
-                message: format!("invalid IP: {}", lease.ip),
-            });
-        }
-    }
-
-    // Check for duplicate static lease IPs
-    let mut seen_ips = std::collections::HashSet::new();
-    for (i, lease) in config.dhcp.static_leases.iter().enumerate() {
-        if !seen_ips.insert(&lease.ip) {
-            errors.push(ValidationError {
-                field: format!("dhcp.static_leases[{}].ip", i),
-                message: format!("duplicate IP: {}", lease.ip),
-            });
-        }
-    }
+pub(crate) fn mac_identity(value: &str) -> String {
+    value.replace('-', ":").to_ascii_lowercase()
 }
 
 fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
@@ -358,18 +359,34 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
                 });
             }
         }
-        if let Some(ref saddr) = pf.source_address {
-            if !saddr.starts_with('@') && !is_valid_ip(saddr) {
-                errors.push(ValidationError {
-                    field: format!("firewall.nat.port_forward[{}].source_address", i),
-                    message: format!("invalid IP: {}", saddr),
-                });
+        for (field, address) in [
+            ("source_address", &pf.source_address),
+            ("target_address", &pf.target_address),
+        ] {
+            if let Some(address) = address {
+                let valid = if let Some(name) = address.strip_prefix('@') {
+                    config
+                        .firewall
+                        .sets
+                        .iter()
+                        .any(|set| set.name == name && set.set_type == "ipv4_addr")
+                } else {
+                    super::static_routes::destination(address)
+                        .is_ok_and(|(network, _)| network.is_ipv4())
+                };
+                if !valid {
+                    errors.push(ValidationError {
+                        field: format!("firewall.nat.port_forward[{i}].{field}"),
+                        message: "must be an IPv4 address/subnet or an existing ipv4_addr set"
+                            .into(),
+                    });
+                }
             }
         }
-        if !pf.redirect_address.starts_with('@') && !is_valid_ip(&pf.redirect_address) {
+        if pf.redirect_address.parse::<std::net::Ipv4Addr>().is_err() {
             errors.push(ValidationError {
-                field: format!("firewall.nat.port_forward[{}].redirect_address", i),
-                message: format!("invalid IP: {}", pf.redirect_address),
+                field: format!("firewall.nat.port_forward[{i}].redirect_address"),
+                message: "DNAT target must be a single IPv4 address".into(),
             });
         }
         if let Some(super::schema::PortSpec::Single(port)) = pf.redirect_port {
@@ -634,6 +651,80 @@ fn is_valid_mac(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn port_forward_filters_support_ipv4_subnets_but_targets_are_single_ipv4_addresses() {
+        let mut config = Config::default();
+        let rule = serde_json::json!({"id":1,"proto":"tcp","interfaces":["wan0"],"source_address":"192.0.2.0/24","target_address":"203.0.113.0/24","redirect_address":"192.168.1.10"});
+        config
+            .firewall
+            .nat
+            .port_forward
+            .push(serde_json::from_value(rule.clone()).unwrap());
+        assert!(validate(&config).is_empty());
+        for (field, value) in [
+            ("source_address", "::1"),
+            ("target_address", "invalid"),
+            ("target_address", "@missing"),
+            ("redirect_address", "@set"),
+            ("redirect_address", "::1"),
+        ] {
+            let mut changed = rule.clone();
+            changed[field] = serde_json::json!(value);
+            config.firewall.nat.port_forward[0] = serde_json::from_value(changed).unwrap();
+            assert!(
+                validate(&config)
+                    .iter()
+                    .any(|error| error.field.ends_with(field)),
+                "accepted {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn dhcpv4_rejects_wrong_families_invalid_ranges_and_duplicate_reservations() {
+        let base = Config::default();
+        assert!(validate(&base).is_empty());
+        for (field, value) in [
+            ("subnet", serde_json::json!("2001:db8::/64")),
+            (
+                "range",
+                serde_json::json!({"start":"192.168.2.100","end":"192.168.2.200"}),
+            ),
+            (
+                "range",
+                serde_json::json!({"start":"192.168.1.200","end":"192.168.1.100"}),
+            ),
+            ("range", serde_json::json!({"start":"::1","end":"::2"})),
+            ("dns_servers", serde_json::json!(["::1"])),
+            ("gateway", serde_json::json!("invalid")),
+        ] {
+            let mut config = base.clone();
+            let mut pool = serde_json::to_value(&config.dhcp.pools[0]).unwrap();
+            pool[field] = value;
+            config.dhcp.pools[0] = serde_json::from_value(pool).unwrap();
+            assert!(
+                validate(&config)
+                    .iter()
+                    .any(|error| error.field.starts_with("dhcp.pools")),
+                "accepted {field}"
+            );
+        }
+        let mut config = base;
+        config.dhcp.static_leases = serde_json::from_value(serde_json::json!([
+            {"mac":"AA:BB:CC:DD:EE:FF","ip":"192.168.1.10","hostname":"first"},
+            {"mac":"aa-bb-cc-dd-ee-ff","ip":"192.168.1.11","hostname":"second"}
+        ]))
+        .unwrap();
+        assert!(validate(&config)
+            .iter()
+            .any(|error| error.field.ends_with(".mac")));
+        config.dhcp.static_leases.truncate(1);
+        config.dhcp.static_leases[0].ip = "::1".into();
+        assert!(validate(&config)
+            .iter()
+            .any(|error| error.field.ends_with(".ip")));
+    }
+
     #[test]
     fn common_mtu_limits_are_validated_independently_of_interface_role() {
         let mut config = Config::default();
