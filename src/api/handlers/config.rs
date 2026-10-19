@@ -776,70 +776,16 @@ pub async fn restore_backup(
 
 /// GET /api/firewall/stats — read nftables counter stats for firewall rules
 pub async fn firewall_stats(State(_state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let mut stats = serde_json::Map::new();
-
-    let chains = [
-        ("inet", "filter", "input"),
-        ("inet", "filter", "forward"),
-        ("inet", "mangle", "prerouting"),
-    ];
-
-    for (table_family, table, chain) in &chains {
-        let output = tokio::process::Command::new("nft")
-            .args(["-j", "list", "chain", table_family, table, chain])
-            .output()
-            .await;
-
-        let output = match output {
-            Ok(o) if o.status.success() => o,
-            _ => continue,
-        };
-
-        let json_str = String::from_utf8_lossy(&output.stdout);
-        let parsed: Value = match serde_json::from_str(&json_str) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        // nft -j JSON: {"nftables": [ {"rule": {"comment": "[id] name", "expr": [...]}}, ... ]}
-        // Comment format: "[id] comment" — extract ID for stats matching
-        if let Some(entries) = parsed.get("nftables").and_then(|v| v.as_array()) {
-            for entry in entries {
-                if let Some(rule) = entry.get("rule") {
-                    let comment = rule.get("comment").and_then(|v| v.as_str()).unwrap_or("");
-
-                    // Parse ID from "[id] ..." format
-                    let rule_id = if let Some(rest) = comment.strip_prefix('[') {
-                        rest.split(']').next().unwrap_or("").to_string()
-                    } else {
-                        continue;
-                    };
-
-                    if rule_id.is_empty() {
-                        continue;
-                    }
-
-                    // Find counter in expr array
-                    if let Some(exprs) = rule.get("expr").and_then(|v| v.as_array()) {
-                        for expr in exprs {
-                            if let Some(counter) = expr.get("counter") {
-                                let packets =
-                                    counter.get("packets").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let bytes =
-                                    counter.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
-                                stats.insert(
-                                    rule_id.clone(),
-                                    json!({"packets": packets, "bytes": bytes}),
-                                );
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    let stats: serde_json::Map<String, Value> = crate::metrics::read_firewall_counters()
+        .await
+        .into_iter()
+        .map(|(id, counter)| {
+            (
+                id,
+                json!({"packets": counter.packets, "bytes": counter.bytes}),
+            )
+        })
+        .collect();
     Ok(Json(json!({"stats": stats})))
 }
 

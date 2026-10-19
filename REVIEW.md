@@ -122,3 +122,18 @@ still validate exact IFB identity and foreign-qdisc/filter protections before
 cleanup/recreation. A namespace regression verified physical-WAN to PPP migration,
 PPP link recreation, rejection without a journal, rejection with a foreign old
 filter, and final cleanup. Live ownership state and shaping were left unchanged.
+
+### 2026-10-19 — Forward access policy before TPROXY
+
+Proxy candidates now pass a shared ordered forward-policy gate before interception.
+Accept enters dispatch. Drop, Reject, and default Drop all bypass interception;
+the actual forward chain performs denial verdicts, logging, and counters. The
+eligibility chain emits neither Drop nor Reject, using Accept only to end proxy
+processing and resume normal routing. Egress/rate conditions conservatively
+bypass proxying and retain original forward evaluation.
+Input delivery is limited to non-local IPv4 packets with the configured proxy
+mark and a transparent socket; router-local services retain input policy. Rule
+counters aggregate proxy-policy and forward/protocol variants before deltas.
+Prerouting checks see pre-DNAT addresses. This does not implement local-output
+WAN selection or failover for sing-box. Existing established-flow shortcuts are
+preserved; this is not immediate revocation of existing connections.

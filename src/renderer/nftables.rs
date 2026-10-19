@@ -18,6 +18,22 @@ pub fn render(config: &Config) -> Result<String> {
         "invalid WAN groups: {:?}",
         group_errors
     );
+    for rule in config
+        .firewall
+        .rules
+        .input
+        .iter()
+        .chain(config.firewall.rules.forward.iter())
+        .filter(|rule| rule.enabled && rule.action == Action::Tproxy)
+    {
+        anyhow::ensure!(rule.oif.is_none() && rule.rate.is_none(), "TPROXY selectors cannot use egress matches or rate limits; use a forward policy rule instead");
+        anyhow::ensure!(
+            rule.proto.as_ref().is_none_or(|protocols| protocols
+                .iter()
+                .all(|proto| matches!(proto.as_str(), "tcp" | "udp"))),
+            "TPROXY supports only TCP and UDP"
+        );
+    }
     let return_routes = wan_return_routes(config)?;
     // Resolve targets here as well as in schema validation: never silently omit a selector.
     for rule in config
@@ -64,7 +80,6 @@ pub fn render(config: &Config) -> Result<String> {
     if has_tproxy_rules(config) || !return_routes.is_empty() || !mss_limits(config).is_empty() {
         doc.objects.push(add_table(NfFamily::INet, "mangle"));
         render_mss_clamping(config, &mut doc);
-        render_tproxy_table(config, &mut doc);
         render_wan_return_rules(&return_routes, &mut doc);
         render_group_chains(config, &return_routes, &mut doc);
         render_outbound_routes(config, &return_routes, &mut doc);
@@ -647,6 +662,8 @@ fn render_filter_table(config: &Config, routes: &[WanReturnRoute<'_>], doc: &mut
         render_nft_set(config, NfFamily::INet, "filter", set, doc);
     }
 
+    render_tproxy_table(config, doc);
+
     // Input chain
     let input_policy = policy_from_str(&config.firewall.default_policy.input);
     doc.objects.push(add_chain(
@@ -678,6 +695,42 @@ fn render_filter_table(config: &Config, routes: &[WanReturnRoute<'_>], doc: &mut
         vec![iifname_match("lo", false), Statement::Accept(None)],
         None,
     ));
+
+    // Only non-local traffic admitted by the proxy gate may bypass service-input policy.
+    for mark in config
+        .firewall
+        .rules
+        .input
+        .iter()
+        .chain(config.firewall.rules.forward.iter())
+        .filter(|rule| rule.enabled && rule.action == Action::Tproxy)
+        .map(|rule| rule.mark.unwrap_or(1))
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        doc.objects.push(add_rule(
+            NfFamily::INet,
+            "filter",
+            "input",
+            vec![
+                ipv4_family_match(),
+                fib_daddr_local_match(true),
+                Statement::Match(Match {
+                    left: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
+                    right: Expression::Number(mark),
+                    op: Operator::EQ,
+                }),
+                Statement::Match(Match {
+                    left: Expression::Named(NamedExpression::Socket(Socket {
+                        key: Cow::Borrowed(&SocketAttr::Transparent),
+                    })),
+                    right: Expression::Number(1),
+                    op: Operator::EQ,
+                }),
+                Statement::Accept(None),
+            ],
+            Some("routerd admitted transparent proxy delivery"),
+        ));
+    }
 
     for rule in config
         .firewall
@@ -1516,97 +1569,205 @@ fn ipv4_family_match() -> Statement<'static> {
     })
 }
 
+fn tproxy_target(chain: &'static str, jump: bool) -> Statement<'static> {
+    let target = stmt::JumpTarget {
+        target: Cow::Borrowed(chain),
+    };
+    if jump {
+        Statement::Jump(target)
+    } else {
+        Statement::Goto(target)
+    }
+}
+
+fn tproxy_match(
+    config: &Config,
+    rule: &FirewallRule,
+    proto: Option<&str>,
+) -> Vec<Statement<'static>> {
+    let mut expressions = vec![ipv4_family_match()];
+    expressions.extend(build_rule_match_stmts(
+        config,
+        rule,
+        Some(proto.unwrap_or("tcp")),
+    ));
+    expressions
+}
+
 fn render_tproxy_table(config: &Config, doc: &mut NftablesDocument) {
-    let tproxy_rules: Vec<&FirewallRule> = config
+    let tproxy_rules: Vec<_> = config
         .firewall
         .rules
         .input
         .iter()
         .chain(config.firewall.rules.forward.iter())
-        .filter(|r| r.enabled && r.action == Action::Tproxy)
+        .filter(|rule| rule.enabled && rule.action == Action::Tproxy)
         .collect();
-
     if tproxy_rules.is_empty() {
         return;
     }
 
+    // Keep admission, sets, and interception in the same table. An accept verdict
+    // from the policy chain deliberately bypasses interception and resumes routing.
     doc.objects.push(add_chain(
         NfFamily::INet,
-        "mangle",
-        "prerouting",
+        "filter",
+        "tproxy_prerouting",
         Some(NfChainType::Filter),
         Some(NfHook::Prerouting),
         Some(-150),
         Some(NfChainPolicy::Accept),
     ));
+    for chain in ["tproxy_gate", "tproxy_policy", "tproxy_dispatch"] {
+        doc.objects.push(add_chain(
+            NfFamily::INet,
+            "filter",
+            chain,
+            None,
+            None,
+            None,
+            None,
+        ));
+    }
+    doc.objects.push(add_rule(
+        NfFamily::INet,
+        "filter",
+        "tproxy_gate",
+        vec![
+            fib_daddr_local_match(false),
+            tproxy_target("tproxy_dispatch", false),
+        ],
+        None,
+    ));
+    doc.objects.push(add_rule(
+        NfFamily::INet,
+        "filter",
+        "tproxy_gate",
+        vec![tproxy_target("tproxy_policy", true)],
+        None,
+    ));
+    doc.objects.push(add_rule(
+        NfFamily::INet,
+        "filter",
+        "tproxy_gate",
+        vec![tproxy_target("tproxy_dispatch", false)],
+        None,
+    ));
 
-    for rule in &tproxy_rules {
+    let policy = policy_from_str(&config.firewall.default_policy.forward);
+    if policy == NfChainPolicy::Drop {
+        doc.objects.push(add_rule(
+            NfFamily::INet,
+            "filter",
+            "tproxy_policy",
+            vec![ct_state_established_related(), Statement::Return(None)],
+            None,
+        ));
+    }
+    for rule in config
+        .firewall
+        .rules
+        .forward
+        .iter()
+        .filter(|rule| rule.enabled && rule.action != Action::Tproxy)
+    {
+        for proto in resolve_protos(rule) {
+            // The actual forward chain must decide rules needing routing or a
+            // shared token bucket. Do not omit these rules and accidentally proxy.
+            let deferred = rule.oif.is_some()
+                || rule.rate.is_some()
+                || matches!(rule.action, Action::Drop | Action::Reject);
+            let expressions = if deferred {
+                let mut matches = rule.clone();
+                matches.oif = None;
+                matches.rate = None;
+                let mut expressions = build_rule_match_stmts(config, &matches, proto.as_deref());
+                // Denial and routing-dependent decisions belong to forward.
+                // Accept here ends only this proxy-eligibility base chain:
+                // no interception, filtering logs, or counters on this path.
+                expressions.push(Statement::Accept(None));
+                expressions
+            } else {
+                let mut expressions = build_rule_stmts(config, rule, proto.as_deref());
+                if rule.action == Action::Accept {
+                    *expressions.last_mut().unwrap() = Statement::Return(None);
+                }
+                expressions
+            };
+            let comment = if deferred {
+                None
+            } else {
+                Some(
+                    format!("[{}] {}", rule.id, rule.comment)
+                        .trim_end()
+                        .to_string(),
+                )
+            };
+            doc.objects.push(add_rule(
+                NfFamily::INet,
+                "filter",
+                "tproxy_policy",
+                expressions,
+                comment.as_deref(),
+            ));
+        }
+    }
+    doc.objects.push(add_rule(
+        NfFamily::INet,
+        "filter",
+        "tproxy_policy",
+        vec![if policy == NfChainPolicy::Drop {
+            Statement::Accept(None)
+        } else {
+            Statement::Return(None)
+        }],
+        None,
+    ));
+
+    for rule in tproxy_rules {
         let comment = if rule.comment.is_empty() {
             format!("[{}]", rule.id)
         } else {
             format!("[{}] {}", rule.id, rule.comment)
         };
-        for proto_opt in resolve_protos(rule) {
-            let proto_str = proto_opt.as_deref().unwrap_or("tcp");
-            let mut stmts = Vec::new();
-
-            // Interface match
-            if !rule.interfaces.is_empty() {
-                if rule.interfaces.len() == 1 {
-                    stmts.push(iifname_match(&rule.interfaces[0], false));
-                } else {
-                    stmts.push(iifname_set_match(&rule.interfaces, false));
-                }
-            }
-
-            // L4 protocol context (skip for layer 2/3 protocols)
-            match proto_str {
-                "ip" | "ether" => {}
-                _ => {
-                    stmts.push(proto_match(proto_str));
-                }
-            }
-
-            // Address matches
-            if let Some(saddr) = &rule.saddr {
-                stmts.push(ip_saddr_match(saddr, false));
-            }
-            if let Some(daddr) = &rule.daddr {
-                stmts.push(ip_daddr_match(daddr, false));
-            }
-
-            // Port matches
-            if let Some(dport) = &rule.dport {
-                stmts.push(port_spec_match(proto_str, "dport", dport));
-            }
-            if let Some(sport) = &rule.sport {
-                stmts.push(port_spec_match(proto_str, "sport", sport));
-            }
-
-            // Counter (log includes counter already)
-            if !rule.log && rule.counter {
-                stmts.push(Statement::Counter(stmt::Counter::Anonymous(None)));
-            }
-
-            // Mark + tproxy
-            let mark = rule.mark.unwrap_or(1);
-            let port = rule.tproxy_port.unwrap_or(0);
-            stmts.push(Statement::Mangle(stmt::Mangle {
-                key: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
-                value: Expression::Number(mark),
-            }));
-            stmts.push(Statement::TProxy(stmt::TProxy {
-                family: Some(Cow::Borrowed("ip")),
-                port,
-                addr: None,
-            }));
-            stmts.push(Statement::Accept(None));
-
+        for proto in resolve_protos(rule) {
+            let mut candidate = tproxy_match(config, rule, proto.as_deref());
+            candidate.push(tproxy_target("tproxy_gate", false));
             doc.objects.push(add_rule(
                 NfFamily::INet,
-                "mangle",
-                "prerouting",
-                stmts,
+                "filter",
+                "tproxy_prerouting",
+                candidate,
+                None,
+            ));
+            let mut expressions = tproxy_match(config, rule, proto.as_deref());
+            if rule.counter {
+                expressions.push(Statement::Counter(stmt::Counter::Anonymous(None)));
+            }
+            if rule.log {
+                // Reuse configured logging without appending a firewall verdict.
+                let logged = build_rule_stmts(config, rule, proto.as_deref());
+                expressions.extend(
+                    logged
+                        .into_iter()
+                        .filter(|expr| matches!(expr, Statement::Log(_))),
+                );
+            }
+            expressions.push(Statement::Mangle(stmt::Mangle {
+                key: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
+                value: Expression::Number(rule.mark.unwrap_or(1)),
+            }));
+            expressions.push(Statement::TProxy(stmt::TProxy {
+                family: Some(Cow::Borrowed("ip")),
+                port: rule.tproxy_port.unwrap_or(0),
+                addr: None,
+            }));
+            expressions.push(Statement::Accept(None));
+            doc.objects.push(add_rule(
+                NfFamily::INet,
+                "filter",
+                "tproxy_dispatch",
+                expressions,
                 Some(&comment),
             ));
         }
@@ -1677,6 +1838,127 @@ mod tests {
             .filter(|rule| rule["table"] == table && rule["chain"] == chain)
             .cloned()
             .collect()
+    }
+
+    fn proxy_policy_config() -> Config {
+        let mut config = Config::default();
+        config.interfaces.items.clear();
+        config.firewall.default_policy.input = "drop".into();
+        config.firewall.default_policy.forward = "drop".into();
+        config.firewall.rules.input.clear();
+        config.firewall.rules.forward = serde_json::from_value(serde_json::json!([
+            {"id":1,"action":"drop","interfaces":["lan0"],"proto":["tcp"],"dport":81,"counter":true},
+            {"id":2,"action":"reject","interfaces":["lan0"],"proto":["tcp"],"dport":82,"counter":true},
+            {"id":3,"action":"accept","interfaces":["lan0"],"proto":["tcp"],"dport":83,"counter":true},
+            {"id":4,"action":"accept","interfaces":["lan0"],"oif":"wan0","proto":["tcp"],"dport":84,"counter":true},
+            {"id":5,"action":"accept","interfaces":["lan0"],"rate":"1/second","proto":["tcp"],"dport":85,"counter":true},
+            {"id":8,"action":"tproxy","interfaces":["lan0"],"proto":["tcp"],"daddr":"198.18.0.0/15","mark":1,"tproxy_port":12345,"counter":true}
+        ])).unwrap();
+        config
+    }
+
+    #[test]
+    fn proxy_eligibility_defers_drop_reject_default_drop_egress_and_rate_rules() {
+        let mut config = proxy_policy_config();
+        config.firewall.rules.forward[0].log = true;
+        config.firewall.rules.forward[1].log = true;
+        let value = render_json(&config);
+        let policy = rules_in_chain(&value, "filter", "tproxy_policy");
+        assert_eq!(policy.len(), 7); // established shortcut, five rules, default drop
+        assert_eq!(
+            policy[1]["expr"].as_array().unwrap().last().unwrap(),
+            &serde_json::json!({"accept":null})
+        );
+        assert_eq!(
+            policy[2]["expr"].as_array().unwrap().last().unwrap(),
+            &serde_json::json!({"accept":null})
+        );
+        assert_eq!(
+            policy[3]["expr"].as_array().unwrap().last().unwrap(),
+            &serde_json::json!({"return":null})
+        );
+        assert_eq!(policy[6]["expr"], serde_json::json!([{"accept":null}]));
+        for index in [1, 2, 4, 5] {
+            assert!(policy[index].get("comment").is_none());
+            let serialized = policy[index]["expr"].to_string();
+            assert!(!serialized.contains("reject"));
+            assert!(!serialized.contains("drop"));
+            assert!(!serialized.contains("counter"));
+            assert!(!serialized.contains("log"));
+            assert!(!serialized.contains("oifname"));
+            assert!(!serialized.contains("limit"));
+        }
+        assert!(!rules_in_chain(&value, "filter", "forward").is_empty());
+        assert!(rules_in_chain(&value, "mangle", "prerouting").is_empty());
+        let input = rules_in_chain(&value, "filter", "input");
+        let delivery = input
+            .iter()
+            .find(|rule| rule["comment"] == "routerd admitted transparent proxy delivery")
+            .unwrap();
+        assert!(delivery["expr"].to_string().contains("transparent"));
+        assert!(delivery["expr"].to_string().contains("local"));
+        assert_eq!(render(&config).unwrap(), render(&config).unwrap());
+    }
+
+    #[test]
+    fn proxy_selectors_use_shared_inverted_set_and_state_matching() {
+        let mut config = proxy_policy_config();
+        config.firewall.sets = serde_json::from_value(serde_json::json!([
+            {"name":"clients","set_type":"ipv4_addr","elements":"192.0.2.0/24","interval":true}
+        ]))
+        .unwrap();
+        let proxy = config.firewall.rules.forward.last_mut().unwrap();
+        proxy.interfaces_invert = true;
+        proxy.saddr = Some("@clients".into());
+        proxy.saddr_invert = true;
+        proxy.state = Some(vec!["new".into()]);
+        let value = render_json(&config);
+        let candidate =
+            rules_in_chain(&value, "filter", "tproxy_prerouting")[0]["expr"].to_string();
+        let dispatch = rules_in_chain(&value, "filter", "tproxy_dispatch")[0]["expr"].to_string();
+        assert!(candidate.contains("@clients") && dispatch.contains("@clients"));
+        assert!(candidate.contains("new") && candidate.contains("!="));
+        assert!(!candidate.contains("limit"));
+        assert!(!dispatch.contains("limit"));
+        config.firewall.default_policy.forward = "accept".into();
+        let policy = rules_in_chain(&render_json(&config), "filter", "tproxy_policy");
+        assert_eq!(
+            policy.last().unwrap()["expr"],
+            serde_json::json!([{"return":null}])
+        );
+    }
+
+    #[test]
+    #[ignore = "requires root, unshare, nsenter, nft, ip and python3; creates isolated network namespaces"]
+    fn native_tproxy_admission_drop_reject_accept_and_deferred_rules() {
+        let directory = crate::service::files::StagedDirectory::new().unwrap();
+        let staged = crate::service::files::StagedFile::new(
+            directory.path(),
+            render(&proxy_policy_config()).unwrap().as_bytes(),
+            0o600,
+        )
+        .unwrap();
+        let mut permissive = proxy_policy_config();
+        permissive.firewall.default_policy.forward = "accept".into();
+        let accept_staged = crate::service::files::StagedFile::new(
+            directory.path(),
+            render(&permissive).unwrap().as_bytes(),
+            0o600,
+        )
+        .unwrap();
+        let output = std::process::Command::new("unshare")
+            .args(["-n", "python3", "-c", include_str!("tproxy_native.py")])
+            .arg(staged.path())
+            .arg(accept_staged.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        println!("{}", String::from_utf8_lossy(&output.stdout));
     }
 
     #[test]

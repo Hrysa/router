@@ -292,6 +292,31 @@ Previously installed custom nftables tables and policy rules are not removed by
 routerd. Review old workaround scripts/rules separately when migrating, with
 console access available; applying network configuration is not transactional.
 
+## Proxy eligibility before transparent proxying
+
+TPROXY candidates now pass the ordered forward access policy before interception.
+Accept rules permit proxy processing. Drop, Reject, and a Drop default instead
+bypass interception so the normal forward chain performs the actual filtering,
+logging, and counting. The existing established/related shortcut under a drop
+policy is preserved. TPROXY rules select traffic;
+they do not grant access by themselves.
+
+The eligibility check emits no Drop or Reject verdicts. Its nftables Accept
+verdict exits only the prerouting base chain; it does not grant forwarding access.
+The normal forward chain drops or rejects the unproxied packet. Rules with
+an outgoing-interface match or a rate limit also defer to normal forwarding,
+without interception, so their routing-dependent matches and token buckets stay
+in the original chain. Prerouting checks use the original destination before DNAT.
+Router-owned destinations retain input policy. Proxy selectors support IPv4 TCP/
+UDP; outgoing-interface matches and rate limits belong in forward policy rules,
+not TPROXY selectors.
+
+Admitted non-local proxy traffic receives a narrow input exception requiring its
+configured packet mark and a transparent socket. Other local traffic keeps the
+normal input rules. Counters sum ordinary forwarding and proxy admission under
+the same rule IDs. Sing-box's new outbound connections still traverse output;
+this change does not add local-output WAN selection or failover.
+
 ## CLI Options
 
 ```

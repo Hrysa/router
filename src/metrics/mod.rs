@@ -359,93 +359,109 @@ async fn collect_firewall(
     let mut next = HashMap::new();
     let interval = COLLECT_INTERVAL_SECS as f64;
 
-    let chains = [
-        ("inet", "filter", "input"),
-        ("inet", "filter", "forward"),
-        ("inet", "mangle", "prerouting"),
-    ];
-
-    for (family, table, chain) in &chains {
-        let output = match tokio::process::Command::new("nft")
-            .args(["-j", "list", "chain", family, table, chain])
-            .output()
-            .await
-        {
-            Ok(o) if o.status.success() => o,
-            _ => continue,
-        };
-
-        let parsed: serde_json::Value = match serde_json::from_slice(&output.stdout) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let entries = match parsed.get("nftables").and_then(|v| v.as_array()) {
-            Some(arr) => arr,
-            None => continue,
-        };
-
-        for entry in entries {
-            let rule = match entry.get("rule") {
-                Some(r) => r,
-                None => continue,
-            };
-
-            let comment = rule.get("comment").and_then(|v| v.as_str()).unwrap_or("");
-            let rule_id = match comment.strip_prefix('[') {
-                Some(rest) => rest.split(']').next().unwrap_or("").to_string(),
-                None => continue,
-            };
-            if rule_id.is_empty() {
-                continue;
-            }
-
-            let exprs = match rule.get("expr").and_then(|v| v.as_array()) {
-                Some(arr) => arr,
-                None => continue,
-            };
-
-            for expr in exprs {
-                if let Some(counter) = expr.get("counter") {
-                    let packets = counter.get("packets").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let bytes = counter.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
-
-                    let current = PreviousRule { packets, bytes };
-                    let delta = prev
-                        .get(&rule_id)
-                        .map(|p| RuleDelta {
-                            packets: current.packets.saturating_sub(p.packets),
-                            bytes: current.bytes.saturating_sub(p.bytes),
-                        })
-                        .unwrap_or(RuleDelta {
-                            packets: 0,
-                            bytes: 0,
-                        });
-
-                    counter!("routerd_firewall_packets_total",
-                        "rule_id" => rule_id.clone(), "chain" => chain.to_string())
-                    .increment(delta.packets);
-                    counter!("routerd_firewall_bytes_total",
-                        "rule_id" => rule_id.clone(), "chain" => chain.to_string())
-                    .increment(delta.bytes);
-
-                    sample.insert(
-                        rule_id.clone(),
-                        RuleSample {
-                            chain: chain.to_string(),
-                            packets_per_sec: delta.packets as f64 / interval,
-                            bytes_per_sec: delta.bytes as f64 / interval,
-                        },
-                    );
-
-                    next.insert(rule_id.clone(), current);
-                    break;
-                }
-            }
-        }
+    for (rule_id, current) in read_firewall_counters().await {
+        let delta = prev
+            .get(&rule_id)
+            .map(|previous| RuleDelta {
+                packets: current.packets.saturating_sub(previous.packets),
+                bytes: current.bytes.saturating_sub(previous.bytes),
+            })
+            .unwrap_or(RuleDelta {
+                packets: 0,
+                bytes: 0,
+            });
+        counter!("routerd_firewall_packets_total", "rule_id" => rule_id.clone(), "chain" => current.chain.clone()).increment(delta.packets);
+        counter!("routerd_firewall_bytes_total", "rule_id" => rule_id.clone(), "chain" => current.chain.clone()).increment(delta.bytes);
+        sample.insert(
+            rule_id.clone(),
+            RuleSample {
+                chain: current.chain,
+                packets_per_sec: delta.packets as f64 / interval,
+                bytes_per_sec: delta.bytes as f64 / interval,
+            },
+        );
+        next.insert(
+            rule_id,
+            PreviousRule {
+                packets: current.packets,
+                bytes: current.bytes,
+            },
+        );
     }
 
     (sample, next)
+}
+
+/// A logical rule can have counters in multiple protocol and proxy-policy rules.
+#[derive(Default)]
+pub(crate) struct FirewallCounter {
+    pub chain: String,
+    pub packets: u64,
+    pub bytes: u64,
+}
+
+pub(crate) async fn read_firewall_counters() -> HashMap<String, FirewallCounter> {
+    let mut counters = HashMap::new();
+    for (table, chain, logical_chain) in [
+        ("filter", "input", "input"),
+        ("filter", "forward", "forward"),
+        ("filter", "tproxy_policy", "forward"),
+        ("filter", "tproxy_dispatch", "prerouting"),
+        // Keep collecting rules installed by an older routerd until Apply.
+        ("mangle", "prerouting", "prerouting"),
+    ] {
+        let Ok(output) = tokio::process::Command::new("nft")
+            .args(["-j", "list", "chain", "inet", table, chain])
+            .output()
+            .await
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_slice(&output.stdout) {
+            merge_firewall_counters(&mut counters, &value, logical_chain);
+        }
+    }
+    counters
+}
+
+fn merge_firewall_counters(
+    counters: &mut HashMap<String, FirewallCounter>,
+    value: &serde_json::Value,
+    chain: &str,
+) {
+    let Some(entries) = value["nftables"].as_array() else {
+        return;
+    };
+    for entry in entries {
+        let rule = &entry["rule"];
+        let Some(id) = rule["comment"]
+            .as_str()
+            .and_then(|comment| comment.strip_prefix('['))
+            .and_then(|comment| comment.split_once(']').map(|(id, _)| id))
+            .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+        else {
+            continue;
+        };
+        let Some(expressions) = rule["expr"].as_array() else {
+            continue;
+        };
+        for expression in expressions {
+            if let Some(counter) = expression.get("counter") {
+                let total = counters.entry(id.into()).or_default();
+                total.chain = chain.into();
+                total.packets = total
+                    .packets
+                    .saturating_add(counter["packets"].as_u64().unwrap_or(0));
+                total.bytes = total
+                    .bytes
+                    .saturating_add(counter["bytes"].as_u64().unwrap_or(0));
+                break;
+            }
+        }
+    }
 }
 
 struct RuleDelta {
@@ -478,6 +494,21 @@ fn read_iface_stat(iface: &str, stat: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn firewall_counters_sum_proxy_policy_forward_and_protocol_variants() {
+        let mut counters = std::collections::HashMap::new();
+        for (packets, bytes) in [(2, 100), (3, 200), (4, 300)] {
+            super::merge_firewall_counters(
+                &mut counters,
+                &serde_json::json!({"nftables":[{"rule":{"comment":"[7] rule", "expr":[{"counter":{"packets":packets,"bytes":bytes}}]}}]}),
+                "forward",
+            );
+        }
+        assert_eq!(counters["7"].packets, 9);
+        assert_eq!(counters["7"].bytes, 600);
+        assert_eq!(counters["7"].chain, "forward");
+    }
+
     use super::*;
 
     #[test]

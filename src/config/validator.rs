@@ -422,6 +422,25 @@ fn validate_firewall(config: &Config, errors: &mut Vec<ValidationError>) {
             });
         }
         if rule.action == crate::config::schema::Action::Tproxy {
+            for (field, unsupported) in [("oif", rule.oif.is_some()), ("rate", rule.rate.is_some())]
+            {
+                if unsupported {
+                    errors.push(ValidationError {
+                        field: format!("firewall.rules.*.{}.{field}", rule.comment),
+                        message: "TPROXY selectors cannot use egress matches or rate limits; use a forward policy rule instead".into(),
+                    });
+                }
+            }
+            if rule.proto.as_ref().is_some_and(|protocols| {
+                protocols
+                    .iter()
+                    .any(|proto| !matches!(proto.as_str(), "tcp" | "udp"))
+            }) {
+                errors.push(ValidationError {
+                    field: format!("firewall.rules.*.{}.proto", rule.comment),
+                    message: "TPROXY supports only TCP and UDP".into(),
+                });
+            }
             if rule.tproxy_port.is_none() || rule.tproxy_port == Some(0) {
                 errors.push(ValidationError {
                     field: format!("firewall.rules.*.{}.tproxy_port", rule.comment),
@@ -868,6 +887,27 @@ mod tests {
         assert!(errors
             .iter()
             .any(|error| error.field == "vpn.wireguard.address"));
+    }
+
+    #[test]
+    fn rejects_tproxy_selectors_that_cannot_be_safely_gated() {
+        for (field, value) in [
+            ("oif", serde_json::json!("wan0")),
+            ("rate", serde_json::json!("5/second")),
+            ("proto", serde_json::json!(["icmp"])),
+        ] {
+            let mut config = default_config();
+            let mut rule = serde_json::json!({"id":44,"action":"tproxy","interfaces":["lan0"],"mark":1,"tproxy_port":12345});
+            rule[field] = value;
+            config
+                .firewall
+                .rules
+                .forward
+                .push(serde_json::from_value(rule).unwrap());
+            assert!(validate(&config)
+                .iter()
+                .any(|error| error.field.ends_with(&format!(".{field}"))));
+        }
     }
 
     #[test]

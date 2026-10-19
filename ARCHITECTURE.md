@@ -222,9 +222,9 @@ The renderer emits a single JSON transaction. It resets only the four table name
 
 | Table | Chains | Purpose |
 |-------|--------|---------|
-| `inet filter` | input, forward, output + named sets | firewall rules; implicit `ct state established,related accept` when policy is drop; implicit `iifname "lo" accept` in input |
+| `inet filter` | input, forward, output, optional tproxy_prerouting (prio -150), tproxy_gate/policy/dispatch + named sets | firewall rules; implicit `ct state established,related accept` when policy is drop; implicit `iifname "lo" accept` in input |
 | `ip nat` | prerouting (DNAT), postrouting | port forwards + masquerade; same-subnet hairpin masquerade across all static internal networks, including VLANs |
-| `inet mangle` | prerouting (prio -150), wan_return (prio -140) | TPROXY rules and optional per-WAN connection/reply marking |
+| `inet mangle` | MSS ingress/egress, wan_return (prio -140), wan_return_output, wan_outbound | MSS caps and optional WAN connection/reply marking and selection |
 | `inet blackhole` | input, forward (prio -5) | `blocked` set, drop saddr/daddr matches |
 
 Address conventions: `@setname` references a named set (protocol picked from the set's type), `@local` compiles to a `fib ... type local` match.
@@ -232,6 +232,30 @@ Address conventions: `@setname` references a named set (protocol picked from the
 Every rule's comment is `[<id>] <comment>` — `/api/firewall/stats` parses the ID out of `nft -j list chain` output to attach per-rule counters.
 
 Do not share these four tables with other tools: their contents are replaced whenever nftables changes are applied. TPROXY marks select dedicated routing tables; reserved IDs 0, 253, 254, and 255 are rejected. Cleanup removes the matching local route/rule, not the entire routing table.
+
+### TPROXY eligibility
+
+`inet filter/tproxy_prerouting` matches IPv4 proxy candidates and enters a shared
+`tproxy_gate`. Router-owned destinations go directly to `tproxy_dispatch` and
+retain input policy. Non-local candidates jump to `tproxy_policy`, which mirrors
+ordered enabled non-TPROXY forward rules and the forward default/established
+behavior. Accept returns to the caller and enters dispatch. Drop, Reject, a Drop
+default, and potential egress/rate matches accept the prerouting base chain without
+entering dispatch, leaving final filtering, denial logging, and denial counters to
+the real forward chain. No Drop or Reject statement is emitted in this eligibility
+chain; Accept there does not grant forwarding access. This conservative deferral
+can bypass proxying even when a later outgoing-interface/rate check would not match.
+
+Dispatch applies the configured mark, transparent listener port, counters, and
+logging. Match construction shares inversion, named-set, and connection-state
+handling with normal firewall rules. Selectors cannot contain egress/rate matches
+or non-TCP/UDP protocols. Admission sees the destination before DNAT. A generated
+input exception requires IPv4, a non-local destination, an exact TPROXY mark, and
+`socket transparent 1`; ordinary input rules continue governing local services.
+The rule-counter reader aggregates protocol variants and forward/proxy-policy
+counters before calculating deltas, while retaining legacy mangle-chain collection
+until the next Apply. No extra mark bits or policy routes are allocated. This
+changes client admission, not sing-box's local-output WAN selection.
 
 ### System route management
 
