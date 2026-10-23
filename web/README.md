@@ -19,7 +19,7 @@ For manual backend development only, use an explicit scratch directory from the 
 cargo run -- --init -c /tmp/routerd-dev --listen 127.0.0.1:8443
 ```
 
-`--init` skips startup network changes, but can create a draft and persist authentication. **Clicking Apply still changes host networking.** Never launch the daemon as a frontend smoke test. Use mocked browser APIs instead, and bootstrap passwords only over trusted management access or HTTPS.
+`--init` creates a draft without changing networking, then exits without starting metrics collection or the web UI/API. It refuses existing config/unit paths, then creates `routerd.service` and runs `systemctl daemon-reload`, requiring root and systemd; it does not enable/start the unit or run API authentication initialization. The installed unit uses normal startup, not `--init`. **Clicking Apply still changes host networking.** Never launch the daemon as a frontend smoke test. Use mocked browser APIs instead, and bootstrap passwords only over trusted management access or HTTPS.
 
 `routerd --install-singbox -c <config-dir>` is a separate config/unit setup command: it requires saved `singbox.config`, overwrites both the deployed JSONC and systemd unit even when they exist, runs `systemctl daemon-reload` after both writes succeed, then exits. Reload failures/timeouts fail setup but leave the installed files in place. It does not download/install a binary, enable/start/restart services, change networking, or run the API. The unit expects `/usr/local/bin/sing-box` installed separately; enable/start/restart remains manual. It does not modify routerd configuration or mark a full Apply successful. Missing/empty saved JSONC is an error, not a request to invent a default config.
 

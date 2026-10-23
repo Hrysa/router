@@ -13,7 +13,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 #[command(name = "routerd", version, about = "Linux router daemon")]
 struct Args {
     /// Path to config directory (contains config.yml)
-    #[arg(short = 'c', long = "config-dir", default_value = "config")]
+    #[arg(short = 'c', long = "config-dir", default_value = "/etc/routerd/")]
     config_dir: String,
 
     /// API server listen address
@@ -28,8 +28,8 @@ struct Args {
     #[arg(long, default_value = "text")]
     log_format: String,
 
-    /// Create config.yml if missing and start the API without changing networking.
-    /// Skips startup apply, offload changes, and hooks even with an existing config.
+    /// Create config and routerd.service, reload systemd, and exit without serving the API.
+    /// Refuses existing config/unit files; skips startup apply, offload changes, and hooks.
     #[arg(long)]
     init: bool,
 
@@ -79,6 +79,10 @@ async fn main() -> anyhow::Result<()> {
     let config_dir = Path::new(&args.config_dir);
     let config_path = config_dir.join("config.yml");
 
+    if args.init {
+        check_init_paths(&config_path, Path::new(service::systemd::UNIT_PATH))?;
+    }
+
     if args.install_singbox {
         service::singbox::install(&config_path).await?;
         tracing::info!("sing-box files installed and systemd reloaded; binary installation and service enable/start/restart are left to the administrator");
@@ -92,16 +96,14 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Initialization only writes a draft config; --init also skips startup changes below.
-    if !config_path.exists() {
-        if args.init {
-            tracing::info!("config.yml not found, running init setup");
-            config::init::run(config_dir)?;
-        } else {
-            anyhow::bail!(
-                "config.yml not found at {}. Run with --init to perform first-boot setup.",
-                config_path.display()
-            );
-        }
+    if args.init {
+        tracing::info!("creating initial config");
+        config::init::run(config_dir)?;
+    } else if !config_path.exists() {
+        anyhow::bail!(
+            "config.yml not found at {}. Run with --init to perform first-boot setup.",
+            config_path.display()
+        );
     }
 
     // Load config
@@ -117,9 +119,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("config validated");
 
     if args.init {
+        service::systemd::install(&service_arguments(&args)?).await?;
         tracing::info!(
-            "init mode: preserving host networking; review the config and use POST /api/config/apply when ready"
+            "initialization complete; host networking unchanged; review the config before manually starting routerd.service"
         );
+        return Ok(());
     } else if args.boot {
         let service_manager = service::manager::ServiceManager::new();
         service::apply::boot_nftables(&config, &service_manager).await?;
@@ -160,6 +164,39 @@ async fn main() -> anyhow::Result<()> {
     api::server::run(server_config).await?;
 
     Ok(())
+}
+
+fn check_init_paths(config: &Path, unit: &Path) -> anyhow::Result<()> {
+    service::files::require_absent(config)?;
+    service::files::require_absent(unit)?;
+    Ok(())
+}
+
+fn service_arguments(args: &Args) -> anyhow::Result<Vec<String>> {
+    let absolute = |path: &Path| -> anyhow::Result<String> {
+        let path = std::fs::canonicalize(path)?;
+        Ok(path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("service paths must be UTF-8"))?
+            .to_owned())
+    };
+    let mut arguments = vec![
+        absolute(&std::env::current_exe()?)?,
+        "--config-dir".into(),
+        absolute(Path::new(&args.config_dir))?,
+        "--listen".into(),
+        args.listen.clone(),
+        "--log-level".into(),
+        args.log_level.clone(),
+        "--log-format".into(),
+        args.log_format.clone(),
+    ];
+    for (flag, path) in [("--tls-cert", &args.tls_cert), ("--tls-key", &args.tls_key)] {
+        if let Some(path) = path {
+            arguments.extend([flag.into(), absolute(Path::new(path))?]);
+        }
+    }
+    Ok(arguments)
 }
 
 /// Find all physical NICs and disable hardware offloads.
@@ -204,6 +241,66 @@ fn disable_offloads() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_refuses_either_existing_path_including_dangling_symlinks() {
+        let directory = service::files::StagedDirectory::new().unwrap();
+        let config = directory.path().join("config.yml");
+        let unit = directory.path().join("routerd.service");
+        assert!(check_init_paths(&config, &unit).is_ok());
+        for path in [&config, &unit] {
+            std::fs::write(path, "existing").unwrap();
+            assert!(check_init_paths(&config, &unit).is_err());
+            assert_eq!(std::fs::read_to_string(path).unwrap(), "existing");
+            std::fs::remove_file(path).unwrap();
+            std::os::unix::fs::symlink(directory.path().join("missing"), path).unwrap();
+            assert!(check_init_paths(&config, &unit).is_err());
+            assert!(service::files::atomic_create(path, b"new", 0o600).is_err());
+            std::fs::remove_file(path).unwrap();
+        }
+        assert_eq!(
+            Args::try_parse_from(["routerd"]).unwrap().config_dir,
+            "/etc/routerd/"
+        );
+    }
+
+    #[test]
+    fn init_service_uses_absolute_paths_and_normal_startup() {
+        let directory = service::files::StagedDirectory::new().unwrap();
+        let certificate = directory.path().join("cert.pem");
+        let key = directory.path().join("key.pem");
+        std::fs::write(&certificate, "certificate").unwrap();
+        std::fs::write(&key, "key").unwrap();
+        let args = Args::try_parse_from([
+            "routerd",
+            "--init",
+            "-c",
+            directory.path().to_str().unwrap(),
+            "--listen",
+            "127.0.0.1:9443",
+            "--log-level",
+            "debug",
+            "--log-format",
+            "json",
+            "--tls-cert",
+            certificate.to_str().unwrap(),
+            "--tls-key",
+            key.to_str().unwrap(),
+        ])
+        .unwrap();
+        let arguments = service_arguments(&args).unwrap();
+        assert!(Path::new(&arguments[0]).is_absolute());
+        assert!(Path::new(&arguments[2]).is_absolute());
+        assert!(!arguments
+            .iter()
+            .any(|argument| argument == "--init" || argument == "--boot"));
+        let parsed = Args::try_parse_from(arguments).unwrap();
+        assert_eq!(parsed.listen, args.listen);
+        assert_eq!(parsed.log_level, args.log_level);
+        assert_eq!(parsed.log_format, args.log_format);
+        assert_eq!(parsed.tls_cert, args.tls_cert);
+        assert_eq!(parsed.tls_key, args.tls_key);
+    }
 
     #[test]
     fn version_is_available_without_starting_the_daemon() {

@@ -115,13 +115,15 @@ cargo run -- --init --listen 127.0.0.1:8443
 
 ### Init Setup (first run)
 
-Run with `--init` to create `config.yml` if missing and start the web UI/API while preserving the current networking setup. Without `--init`, a missing config is an error.
+Run with `--init` to create a new draft `config.yml`, install `routerd.service`, reload systemd, and exit without starting the web UI/API or changing networking. Without `--init`, a missing config is an error.
 
-Initialization detects interfaces and saves a **draft** router configuration. It does not write system service configs, switch network managers, change NIC offloads, run startup hooks, or apply firewall/routing changes. Existing `config.yml` files are kept when `--init` is used again.
+Initialization detects interfaces and saves a **draft** router configuration. It does not write network service configs, switch network managers, change NIC offloads, run startup hooks, or apply firewall/routing changes. Initialization aborts before writing if `config.yml` or `/etc/systemd/system/routerd.service` already exists (including symlinks).
 
-Review the draft before using `POST /api/config/apply`: the generated LAN address is `192.168.1.1/24` and the default firewall/NAT rules are router defaults, not a full import of the host's current setup. Applying changes explicitly takes over the configured services.
+A successful `--init` also atomically creates `/etc/systemd/system/routerd.service` (`0644`) and runs `systemctl daemon-reload` (30-second timeout), so initialization requires root and systemd. Failures abort startup; a reload failure leaves the unit installed. The unit uses the current executable, absolute config/TLS paths, and current listen/log options, **without `--init`**: starting it performs normal startup reconciliation. Keep the executable at that path. Installation neither enables nor starts/restarts the service. After reviewing/editing the draft, explicitly run `sudo systemctl enable --now routerd.service` when ready. Existing files are never overwritten; concurrent creation is rejected. A later failure can leave the config or unit installed; inspect partial installation before retrying.
 
-Keep `--init` on subsequent starts to continue skipping startup changes. Normal startup reconciles saved interface, DHCP, PPP, WireGuard, sysctl, routing, and shaping configuration, changes NIC offloads, and runs startup hooks, but does not check/install nftables rules or read/control sing-box. Manage sing-box startup with systemd.
+Review the draft before using `POST /api/config/apply`: the generated LAN address is `192.168.1.1/24`. New drafts have `accept` policies for input, forward, and output, with empty input/forward rule lists; they provide no default firewall filtering. WAN masquerade remains enabled, with no port forwards or blackhole entries. These are draft defaults, not a full import of the host's current setup. Existing saved configurations and omitted-field schema defaults are unchanged. Applying changes explicitly takes over the configured services; configure restrictive firewall policies/rules before exposing the router to untrusted networks.
+
+`--init` is for first-time setup only and refuses existing config/unit files. Normal startup reconciles saved interface, DHCP, PPP, WireGuard, sysctl, routing, and shaping configuration, changes NIC offloads, and runs startup hooks, but does not check/install nftables rules or read/control sing-box. Manage sing-box startup with systemd.
 
 `--boot` instead validates the saved configuration, checks and installs only its nftables JSON, then serves the UI/API. It skips other service reconciliation, generated-file writes, sysctl, routes, shaping, NIC offloads, and startup hooks; it never controls sing-box. It requires an existing config and cannot be combined with `--init` or `--install-singbox`. This is a running daemon mode, not a one-shot command. TPROXY/WAN policy routes and other non-firewall setup must already be provisioned separately or through an explicit full Apply.
 
@@ -510,11 +512,11 @@ conflicts and are never adopted merely by matching a name.
 routerd [OPTIONS]
 
 Options:
-  -c, --config-dir <DIR>   Config directory [default: config]
+  -c, --config-dir <DIR>   Config directory [default: /etc/routerd/]
       --listen <ADDR>      API server listen address [default: 0.0.0.0:8443]
       --log-level <LEVEL>  Log level: trace, debug, info, warn, error [default: info]
       --log-format <FMT>   Log format: text, json [default: text]
-      --init               Create config if missing; start UI/API without changing networking
+      --init               Create new config/unit (refuse existing); reload systemd and exit
       --boot               Check/install only nftables, then start UI/API
       --tls-cert <PATH>    TLS certificate (PEM)
       --tls-key <PATH>     TLS private key (PEM)
@@ -596,7 +598,7 @@ All routes listed below require `Authorization: Bearer <token>`, except the thre
 
 ## Config Directory
 
-All configuration lives in a directory (default: `./config/` or `/etc/router/`):
+All configuration lives in a directory (default: `/etc/routerd/`):
 
 ```
 config/

@@ -62,6 +62,27 @@ impl Drop for StagedFile {
     }
 }
 
+pub fn require_absent(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => anyhow::bail!("refusing initialization: {} already exists", path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
+    }
+}
+
+pub fn atomic_create(path: &Path, content: &[u8], mode: u32) -> Result<()> {
+    let parent = path.parent().context("destination has no parent")?;
+    let staged = StagedFile::new(parent, content, mode)?;
+    std::fs::hard_link(staged.path(), path).with_context(|| {
+        format!(
+            "failed to create {} without replacing existing files",
+            path.display()
+        )
+    })?;
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 pub fn atomic_write(path: &Path, content: &[u8], mode: u32) -> Result<()> {
     let parent = path
         .parent()

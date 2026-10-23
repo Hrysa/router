@@ -5,6 +5,7 @@ use std::path::Path;
 /// Generate a first-time config without changing the host's networking.
 /// The detected config is a draft for review before an explicit apply.
 pub fn run(config_dir: &Path) -> Result<Config> {
+    crate::service::files::require_absent(&config_dir.join("config.yml"))?;
     tracing::info!("config not found, generating initial config without applying it");
 
     let config = detect_config()?;
@@ -15,7 +16,7 @@ pub fn run(config_dir: &Path) -> Result<Config> {
         .with_context(|| format!("failed to create config dir: {}", config_dir.display()))?;
 
     let yaml = serde_yaml::to_string(&config).context("failed to serialize config")?;
-    crate::service::files::atomic_write(&config_path, yaml.as_bytes(), 0o600)
+    crate::service::files::atomic_create(&config_path, yaml.as_bytes(), 0o600)
         .with_context(|| format!("failed to write config: {}", config_path.display()))?;
 
     tracing::info!("init config written to {}", config_path.display());
@@ -95,150 +96,17 @@ fn detect_config() -> Result<Config> {
 }
 
 fn build_config(wan: InterfaceConfig, lan: InterfaceConfig, masq_oif: String) -> Config {
-    let wan_name = wan.name.clone();
-    let lan_name = lan.name.clone();
-
-    let mut config = Config {
+    Config {
         interfaces: Interfaces {
             items: vec![wan, lan],
         },
         firewall: Firewall {
             default_policy: DefaultPolicy {
-                input: "drop".into(),
-                forward: "drop".into(),
+                input: "accept".into(),
+                forward: "accept".into(),
                 output: "accept".into(),
             },
-            rules: FirewallRules {
-                input: vec![
-                    FirewallRule {
-                        id: 0,
-                        action: Action::Accept,
-                        comment: "allow-loopback".into(),
-                        interfaces: vec!["lo".into()],
-                        oif: None,
-                        route_via: None,
-                        preserve_internal_routes: true,
-                        proto: None,
-                        dport: None,
-                        sport: None,
-                        saddr: None,
-                        daddr: None,
-                        interfaces_invert: false,
-                        saddr_invert: false,
-                        daddr_invert: false,
-                        state: None,
-                        rate: None,
-                        log: false,
-                        log_prefix: None,
-                        mark: None,
-                        tproxy_port: None,
-                        counter: false,
-                        enabled: true,
-                    },
-                    FirewallRule {
-                        id: 0,
-                        action: Action::Accept,
-                        comment: "allow-established".into(),
-                        interfaces: vec![wan_name.clone(), lan_name.clone()],
-                        oif: None,
-                        route_via: None,
-                        preserve_internal_routes: true,
-                        proto: None,
-                        dport: None,
-                        sport: None,
-                        saddr: None,
-                        daddr: None,
-                        interfaces_invert: false,
-                        saddr_invert: false,
-                        daddr_invert: false,
-                        state: Some(vec!["established".into(), "related".into()]),
-                        rate: None,
-                        log: false,
-                        log_prefix: None,
-                        mark: None,
-                        tproxy_port: None,
-                        counter: false,
-                        enabled: true,
-                    },
-                    FirewallRule {
-                        id: 0,
-                        action: Action::Accept,
-                        comment: "allow-lan".into(),
-                        interfaces: vec![lan_name.clone()],
-                        oif: None,
-                        route_via: None,
-                        preserve_internal_routes: true,
-                        proto: None,
-                        dport: None,
-                        sport: None,
-                        saddr: None,
-                        daddr: None,
-                        interfaces_invert: false,
-                        saddr_invert: false,
-                        daddr_invert: false,
-                        state: None,
-                        rate: None,
-                        log: false,
-                        log_prefix: None,
-                        mark: None,
-                        tproxy_port: None,
-                        counter: false,
-                        enabled: true,
-                    },
-                ],
-                forward: vec![
-                    FirewallRule {
-                        id: 0,
-                        action: Action::Accept,
-                        comment: "lan-to-wan".into(),
-                        interfaces: vec![lan_name.clone()],
-                        oif: Some(masq_oif.clone()),
-                        route_via: None,
-                        preserve_internal_routes: true,
-                        proto: None,
-                        dport: None,
-                        sport: None,
-                        saddr: None,
-                        daddr: None,
-                        interfaces_invert: false,
-                        saddr_invert: false,
-                        daddr_invert: false,
-                        state: None,
-                        rate: None,
-                        log: false,
-                        log_prefix: None,
-                        mark: None,
-                        tproxy_port: None,
-                        counter: false,
-                        enabled: true,
-                    },
-                    FirewallRule {
-                        id: 0,
-                        action: Action::Accept,
-                        comment: "allow-established".into(),
-                        interfaces: vec![wan_name.clone(), lan_name.clone()],
-                        oif: None,
-                        route_via: None,
-                        preserve_internal_routes: true,
-                        proto: None,
-                        dport: None,
-                        sport: None,
-                        saddr: None,
-                        daddr: None,
-                        interfaces_invert: false,
-                        saddr_invert: false,
-                        daddr_invert: false,
-                        state: Some(vec!["established".into(), "related".into()]),
-                        rate: None,
-                        log: false,
-                        log_prefix: None,
-                        mark: None,
-                        tproxy_port: None,
-                        counter: false,
-                        enabled: true,
-                    },
-                ],
-            },
+            rules: FirewallRules::default(),
             nat: Nat {
                 masquerade: vec![MasqueradeRule { oif: masq_oif }],
                 port_forward: vec![],
@@ -251,19 +119,7 @@ fn build_config(wan: InterfaceConfig, lan: InterfaceConfig, masq_oif: String) ->
             ..Default::default()
         },
         ..Config::default()
-    };
-
-    let initial_rules = std::mem::take(&mut config.firewall.rules);
-    for mut rule in initial_rules.input {
-        rule.id = config.firewall.rules.next_id();
-        config.firewall.rules.input.push(rule);
     }
-    for mut rule in initial_rules.forward {
-        rule.id = config.firewall.rules.next_id();
-        config.firewall.rules.forward.push(rule);
-    }
-
-    config
 }
 
 /// List network interfaces from /sys/class/net/.
@@ -420,10 +276,9 @@ fn gethostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     #[test]
-    fn test_initial_firewall_rule_ids() {
+    fn test_initial_firewall_accepts_all_with_empty_rules() {
         let config = build_config(
             InterfaceConfig {
                 name: "eth0".into(),
@@ -438,20 +293,21 @@ mod tests {
         let yaml = serde_yaml::to_string(&config).unwrap();
         let restored: Config = serde_yaml::from_str(&yaml).unwrap();
         let rules = &restored.firewall.rules;
-        let ids: Vec<u32> = rules
-            .input
-            .iter()
-            .chain(rules.forward.iter())
-            .map(|rule| rule.id)
-            .collect();
-
-        assert!(!ids.is_empty());
-        assert_eq!(ids[0], 1);
-        assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1));
-        assert!(ids.iter().all(|id| *id > 0));
-        assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), ids.len());
-        assert_eq!(restored.firewall.rules, config.firewall.rules);
-        assert_eq!(rules.next_id(), ids.last().unwrap() + 1);
+        assert!(rules.input.is_empty());
+        assert!(rules.forward.is_empty());
+        assert_eq!(rules.next_id(), 1);
+        assert_eq!(restored.firewall, config.firewall);
+        assert_eq!(
+            restored.firewall.default_policy,
+            DefaultPolicy {
+                input: "accept".into(),
+                forward: "accept".into(),
+                output: "accept".into(),
+            }
+        );
+        assert_eq!(restored.firewall.nat.masquerade[0].oif, "eth0");
+        assert!(restored.firewall.nat.port_forward.is_empty());
+        assert!(restored.firewall.blackhole.is_empty());
     }
 
     #[test]

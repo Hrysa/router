@@ -5,6 +5,7 @@ pub mod manager;
 pub mod rollback;
 pub mod routing;
 pub mod singbox;
+pub mod systemd;
 pub mod wan_policy;
 
 pub mod shaper;
