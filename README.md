@@ -100,13 +100,10 @@ without publishing a release. The workflow never deploys to a router.
 ### Run
 
 ```bash
-# Normal startup: other network setup, but no nftables or sing-box apply
+# Normal startup: full Apply once per boot; later starts resume monitoring
 sudo ./target/release/routerd -c /etc/router --listen 127.0.0.1:8443
 
-# Firewall-only startup, then serve the UI/API; sing-box is left to systemd
-sudo ./target/release/routerd --boot -c /etc/router --listen 127.0.0.1:8443
-
-# First run (creates a draft config and starts the UI, preserving host networking)
+# First run (creates a draft config and service unit, then exits)
 sudo ./target/release/routerd --init -c /etc/router --listen 127.0.0.1:8443
 
 # Development (uses ./config/ as default)
@@ -119,15 +116,17 @@ Run with `--init` to create a new draft `config.yml`, install `routerd.service`,
 
 Initialization detects interfaces and saves a **draft** router configuration. It does not write network service configs, switch network managers, change NIC offloads, run startup hooks, or apply firewall/routing changes. Initialization aborts before writing if `config.yml` or `/etc/systemd/system/routerd.service` already exists (including symlinks).
 
-A successful `--init` also atomically creates `/etc/systemd/system/routerd.service` (`0644`) and runs `systemctl daemon-reload` (30-second timeout), so initialization requires root and systemd. Failures abort startup; a reload failure leaves the unit installed. The unit uses the current executable, absolute config/TLS paths, and current listen/log options, **without `--init`**: starting it performs normal startup reconciliation. Keep the executable at that path. Installation neither enables nor starts/restarts the service. After reviewing/editing the draft, explicitly run `sudo systemctl enable --now routerd.service` when ready. Existing files are never overwritten; concurrent creation is rejected. A later failure can leave the config or unit installed; inspect partial installation before retrying.
+A successful `--init` also atomically creates `/etc/systemd/system/routerd.service` (`0644`) and runs `systemctl daemon-reload` (30-second timeout), so initialization requires root and systemd. Failures abort initialization; a reload failure leaves the unit installed. The unit uses the current executable, absolute config/TLS paths, and current listen/log options without `--init`. Keep the executable at that path. Installation neither enables nor starts/restarts the service. After reviewing/editing the draft, explicitly run `sudo systemctl enable --now routerd.service` when ready. Existing files are never overwritten; concurrent creation is rejected. A later failure can leave the config or unit installed; inspect partial installation before retrying.
 
-Review the draft before using `POST /api/config/apply`: the generated LAN address is `192.168.1.1/24`. New drafts have `accept` policies for input, forward, and output, with empty input/forward rule lists; they provide no default firewall filtering. WAN masquerade remains enabled, with no port forwards or blackhole entries. These are draft defaults, not a full import of the host's current setup. Existing saved configurations and omitted-field schema defaults are unchanged. Applying changes explicitly takes over the configured services; configure restrictive firewall policies/rules before exposing the router to untrusted networks.
+Review the draft before starting the daemon or using `POST /api/config/apply`: the generated LAN address is `192.168.1.1/24`. New drafts have `accept` policies for input, forward, and output, with empty input/forward rule lists; they provide no default firewall filtering. WAN masquerade remains enabled, with no port forwards or blackhole entries. These are draft defaults, not a full import of the host's current setup. Existing saved configurations and omitted-field schema defaults are unchanged. Applying changes explicitly takes over the configured services; configure restrictive firewall policies/rules before exposing the router to untrusted networks.
 
-`--init` is for first-time setup only and refuses existing config/unit files. Normal startup reconciles saved interface, DHCP, PPP, WireGuard, sysctl, routing, and shaping configuration, changes NIC offloads, and runs startup hooks, but does not check/install nftables rules or read/control sing-box. Manage sing-box startup with systemd.
+`--init` is for first-time setup only and refuses existing config/unit files. Normal startup validates saved configuration and runs `before_start`, then runs the full Apply pipeline if `/run/routerd/applied` is missing. This includes required nftables syntax validation/installation, configured sing-box validation/deployment/service control, and interface, DHCP, PPP, WireGuard, sysctl, routing, and shaping reconciliation. Only successful completion atomically creates the empty flag (`0600`). An Apply failure can leave partial host changes; there is no automatic rollback.
 
-`--boot` instead validates the saved configuration, checks and installs only its nftables JSON, then serves the UI/API. It skips other service reconciliation, generated-file writes, sysctl, routes, shaping, NIC offloads, and startup hooks; it never controls sing-box. It requires an existing config and cannot be combined with `--init` or `--install-singbox`. This is a running daemon mode, not a one-shot command. TPROXY/WAN policy routes and other non-firewall setup must already be provisioned separately or through an explicit full Apply.
+When the flag exists, startup skips Apply and resumes background shaping and WAN-group monitoring. WAN groups resume only when installed map policies/marks match saved groups; mismatches report that explicit Apply is required. The flag stores no config hash, version, health, or applied snapshot. Saved changes still require explicit Apply; the flag does not detect host drift. `/run` clears on reboot. Explicit API Apply and restore invalidate the flag before attempting Apply and recreate it only after success, so failure/cancellation causes a later startup to retry.
 
-Normal startup, `--boot`, and explicit Apply require root for their host changes. `nft` is mandatory for `--boot` and explicit Apply, but not normal startup; Kea's syntax check runs only when `kea-dhcp4` is installed during normal startup or full Apply. Initialization needs at least two available network interfaces to generate its WAN/LAN draft.
+NIC offload changes and startup hooks still run on every normal daemon startup: `before_start` → conditional Apply → flag publication after success → `after_start`. Hooks can inspect the flag themselves. Hooks are not run by API Apply. `--init` skips hooks, flag access, and host reconciliation. The old `--boot` option has been removed; remove it from existing service commands. Restarting the daemon with the flag present does not reinstall nftables or restart configured services.
+
+Normal startup and explicit Apply require root for host changes. `nft` is mandatory whenever full Apply runs; Kea and sing-box syntax checks are optional only when their binaries are absent. Initialization needs at least two available network interfaces to generate its WAN/LAN draft. Use one daemon/configuration per host: the flag is host-wide, and the operation lock serializes work only within that daemon.
 
 ### sing-box config/unit setup
 
@@ -141,7 +140,7 @@ This reads `/etc/router/config.yml` and **always overwrites both** `/etc/sing-bo
 
 After both writes succeed, setup runs `systemctl daemon-reload` with a 30-second timeout. A nonzero exit, execution error, or timeout fails the command and reports that the files are already installed; no reload is attempted after input/write failures. It does not enable, start, or restart sing-box.
 
-No sing-box binary is downloaded, installed, replaced, or executed. Install it separately at `/usr/local/bin/sing-box`, which the generated unit uses. Setup does not run `sing-box check`, startup hooks, networking changes, or the API server. Validation with `sing-box check` remains part of editor Save and full Apply when the binary is installed. Enable/start the unit separately when ready. `--install-singbox` cannot be combined with `--init` or `--boot`.
+No sing-box binary is downloaded, installed, replaced, or executed. Install it separately at `/usr/local/bin/sing-box`, which the generated unit uses. Setup does not run `sing-box check`, startup hooks, networking changes, or the API server. Validation with `sing-box check` remains part of editor Save and full Apply when the binary is installed. Enable/start the unit separately when ready. `--install-singbox` cannot be combined with `--init`.
 
 ### Security and transport
 
@@ -476,10 +475,10 @@ and choose reachable ICMP targets. A round waits for each target only until one
 answers; the configured interval follows completion of the round. Failure and
 recovery thresholds plus the recovery delay prevent rapid switching.
 
-Monitoring activates after successful full Apply or nftables installation with
-`--boot`; normal startup and `--init` do not activate it. WAN addresses and policy
-routes must already exist for boot-mode probes to succeed; `--boot` does not set
-up routing. New maps block matching traffic until probes establish a healthy tier.
+Monitoring activates after successful full Apply, including the first startup of
+each boot. Later daemon starts resume monitoring against compatible installed
+maps without reinstalling the firewall. New maps block matching traffic until
+probes establish a healthy tier.
 When all members are unavailable, new matching connections are blocked. Existing
 connections retain their WAN even after tier changes; a failed WAN's connections
 usually need to reconnect because their public address changes. IPv6 and
@@ -520,7 +519,6 @@ Options:
       --log-level <LEVEL>  Log level: trace, debug, info, warn, error [default: info]
       --log-format <FMT>   Log format: text, json [default: text]
       --init               Create new config/unit (refuse existing); reload systemd and exit
-      --boot               Check/install only nftables, then start UI/API
       --tls-cert <PATH>    TLS certificate (PEM)
       --tls-key <PATH>     TLS private key (PEM)
       --install-singbox    Overwrite sing-box config/unit, run daemon-reload, then exit; no download
@@ -619,7 +617,7 @@ Service configs generated from `config.yml`:
 - `/etc/sysctl.d/90-routerd.conf` — kernel network settings
 - `/etc/sing-box/config.jsonc` — raw `singbox.config` JSONC, written on explicit full Apply or `--install-singbox` setup
 
-nftables is rendered as JSON and applied with `nft -j -f`; no `/etc/nftables.conf` is generated. Routerd replaces only its four owned tables (`inet filter`, `ip nat`, `inet mangle`, `inet blackhole`); do not place unrelated rules in those tables. Other nftables tables are preserved. Normal startup leaves live rules untouched; use `--boot` to restore saved rules after reboot. After a successful full Apply, unchanged rendered rules are skipped on subsequent applies, preserving their counters. `--boot`, the first explicit full Apply in a process (regardless of startup mode), and forced backup restores always install the rules. Required syntax validation runs for each of these firewall operations. This in-memory comparison does not detect external modifications to live nftables tables.
+nftables is rendered as JSON and applied with `nft -j -f`; no `/etc/nftables.conf` is generated. Routerd replaces only its four owned tables (`inet filter`, `ip nat`, `inet mangle`, `inet blackhole`); do not place unrelated rules in those tables. Other nftables tables are preserved. Normal startup runs full Apply when `/run/routerd/applied` is missing, restoring saved rules after reboot; subsequent starts skip Apply while the flag exists. After a successful full Apply, unchanged rendered rules are skipped on subsequent applies, preserving their counters. The first full Apply in a process and forced backup restores always install the rules. Required syntax validation runs for each of these firewall operations. This in-memory comparison does not detect external modifications to live nftables tables.
 
 sing-box JSONC is stored verbatim in `config.yml` under `singbox.config`, preserving comments and whitespace and including it in routerd backups/restores:
 
@@ -641,7 +639,7 @@ outbound interface binding unset. An explicit `bind_interface` instead constrain
 that outbound to the selected device. Static server routes do not provide health
 checks or automatic failover.
 
-Existing configurations without a `singbox` section remain valid and leave the deployed file/service unmanaged. To migrate, paste the existing `/etc/sing-box/config.jsonc` contents into the WebUI sing-box editor and Save before Apply; there is no automatic import. Empty `singbox.config` is rejected. Omitting the whole section leaves existing deployed files/services untouched, including when restoring an older backup without that section. All startup modes still skip sing-box deployment/control; systemd manages its boot lifecycle. The service-content snapshot is published only after complete full-Apply success; failures/cancellation leave retry available. Neither normal startup nor firewall-only `--boot` publishes a full-Apply snapshot.
+Existing configurations without a `singbox` section remain valid and leave the deployed file/service unmanaged. To migrate, paste the existing `/etc/sing-box/config.jsonc` contents into the WebUI sing-box editor and Save before Apply; there is no automatic import. Empty `singbox.config` is rejected. Omitting the whole section leaves existing deployed files/services untouched, including when restoring an older backup without that section. Normal startup includes sing-box deployment/control when the boot flag is missing; starts with the flag present skip Apply. The service-content snapshot is published only after complete full-Apply success; failures/cancellation leave retry available. Startup publishes a full-Apply snapshot only when it actually completes Apply; flag-only restarts leave explicit Apply available.
 
 The authoritative schema is `src/config/schema.rs`; validation lives in `src/config/validator.rs`. The runtime `config/` directory is gitignored, not a checked-in schema/example. Section updates replace that section rather than merging individual fields.
 

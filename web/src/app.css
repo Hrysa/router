@@ -1352,6 +1352,23 @@ tbody tr:hover {
 .interface-picker-option small {
   display: block;
 }
+.editor-section {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0;
+}
+.editor-section > legend {
+  margin-left: 16px;
+  padding: 0 8px;
+  color: var(--strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+.editor-section > .form-grid {
+  padding: 16px;
+}
 .field-wide {
   grid-column: 1 / -1;
 }

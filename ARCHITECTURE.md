@@ -194,9 +194,9 @@ System/interface details and Kea CSV lease reads live in `src/api/handlers/monit
 
 ### CLI (`src/main.rs`)
 
-`--install-singbox` exits through a separate config/unit setup path before store initialization or daemon startup. It reads `<config-dir>/config.yml`, requires nonempty `singbox.config`, and unconditionally atomically replaces `/etc/sing-box/config.jsonc` at `0600` and `/etc/systemd/system/sing-box.service` at `0644`. Only after both writes succeed does it run `systemctl daemon-reload`, with a 30-second timeout and cancellation-safe child cleanup. Execution failures, nonzero exits, and timeouts propagate with a warning in the error that files are already installed. Source/write failures skip reload, and the two replacements are not a transaction. It neither downloads nor executes/replaces the sing-box binary, creates backups/authentication state, starts the API, nor changes networking. The unit expects an independently installed `/usr/local/bin/sing-box`; enable/start/restart remains an administrator operation. JSONC external validation remains on editor Save/full Apply, not this installer. Install mode conflicts with `--init` and `--boot`. Regression tests inject a fake systemctl executable and temporary source/destination paths, never a live systemd reload.
+`--install-singbox` exits through a separate config/unit setup path before store initialization or daemon startup. It reads `<config-dir>/config.yml`, requires nonempty `singbox.config`, and unconditionally atomically replaces `/etc/sing-box/config.jsonc` at `0600` and `/etc/systemd/system/sing-box.service` at `0644`. Only after both writes succeed does it run `systemctl daemon-reload`, with a 30-second timeout and cancellation-safe child cleanup. Execution failures, nonzero exits, and timeouts propagate with a warning in the error that files are already installed. Source/write failures skip reload, and the two replacements are not a transaction. It neither downloads nor executes/replaces the sing-box binary, creates backups/authentication state, starts the API, nor changes networking. The unit expects an independently installed `/usr/local/bin/sing-box`; enable/start/restart remains an administrator operation. JSONC external validation remains on editor Save/full Apply, not this installer. Install mode conflicts with `--init`. Regression tests inject a fake systemctl executable and temporary source/destination paths, never a live systemd reload.
 
-Entry point with clap argument parsing. Orchestrates startup: parse args → init if needed → load and validate config → selected startup mode → start API server. Normal startup reconciles other saved service/network configuration, NIC offloads, and hooks, but skips nftables checks/install and all sing-box reads/status/control. `--init` skips startup networking changes, creates its systemd unit, reloads systemd, and exits before metrics collection, authentication initialization, or API startup. `--boot` checks and installs only nftables from the existing saved config, then starts the API; it conflicts with `--init` and `--install-singbox`. Boot mode does not write generated service files, reconcile other services, apply sysctl, restore TPROXY/WAN policy routes or shaping, change offloads, or run hooks. These non-firewall dependencies must be provisioned separately. All modes leave sing-box startup to systemd; explicit API Apply and restore retain full reconciliation.
+Entry point with clap argument parsing. Normal startup validates the saved config under the operation lock, changes NIC offloads, runs `before_start`, then checks `/run/routerd/applied`. A missing flag triggers full Apply; success publishes the flag before `after_start`. Both hooks run on every normal startup. An existing flag skips Apply and resumes shaping/WAN-group monitoring, without seeding full-Apply content snapshots. `--init` creates a draft and systemd unit, reloads systemd, and exits before host reconciliation, flag access, hooks, metrics, authentication initialization, or API startup. `--boot` has been removed.
 
 ---
 
@@ -218,15 +218,15 @@ POST /api/config/apply / explicit backup restore (full Apply)
     → reconcile IPv4 TPROXY policy routing
 ```
 
-Normal startup shares the full pipeline's other service/network steps, but skips the external nftables syntax check, nftables installation, and all sing-box reconciliation. Firewall-only `--boot` uses a separate schema validation → nftables render → required `nft -j -c -f` → `nft -j -f` path, without the rest of the pipeline. Neither partial startup path publishes a full-Apply service-content snapshot.
+Normal startup uses full Apply only when the boot flag is missing. The empty `/run/routerd/applied` flag is atomically replaced at `0600` after complete success. Every full Apply, including API Apply and restore, removes it before attempting validation/reconciliation and recreates it on success; failed/cancelled attempts leave it absent for startup retry. `/run` clears on OS reboot. The flag is deliberately presence-only: it carries no saved-config hash, implementation version, applied config, or live health. A flag-only restart keeps explicit Apply pending; it does not query/restart services or reinstall firewall tables. One daemon/configuration per host is assumed; the operation lock is in-process.
 
 API mutations, service controls, apply, and restore share an operation lock. Read-modify-write requests cannot overwrite one another, and service applies cannot overlap. Individual config saves also hold the store's write lock through disk replacement and in-memory publication. Backups use unique timestamp/UUID IDs, and restore rejects IDs containing path separators.
 
 External syntax validators are required nftables, optional-when-absent Kea, and optional-when-absent `sing-box check -c <staged JSONC>` for configured sing-box on full Apply. PPP, WireGuard, networkd, and sysctl rely on `src/config/validator.rs`. Service command failures, sysctl failures, and TPROXY setup failures propagate instead of reporting a successful apply. An absent `singbox` section means its deployed file and service are left unmanaged; configured sing-box validation/write/start/restart failures propagate.
 
-There is no automatic transactional rollback after failure: earlier file writes and service changes may persist. The in-memory last-successful configuration snapshot is not a durable applied-state journal; it is initialized from the saved configuration at process startup. Separate service-content snapshots for nftables JSON and saved sing-box JSONC start unknown, so the first explicit full Apply always reconciles nftables and configured sing-box, regardless of startup mode. They are invalidated when an apply attempt begins and published only after all full-Apply steps succeed; failed or cancelled attempts therefore cannot skip reconciliation on retry, including after a config revert. Forced backup restore bypasses these content comparisons. Unchanged running sing-box is left alone; configured inactive sing-box is started. Missing/drifted JSONC is replaced from saved configuration, and read errors other than absence propagate. nftables syntax checking still runs on full Apply even when its rules are unchanged; no live kernel-ruleset comparison is performed, so external modifications to owned tables require `--boot` or forced restore to reinstall unchanged rules. Normal startup never restores those tables. Keep console access and review configuration before applying network changes.
+There is no automatic transactional rollback after failure: earlier file writes and service changes may persist. The in-memory last-successful configuration snapshot is not a durable applied-state journal; it is initialized from the saved configuration at process startup. Separate service-content snapshots for nftables JSON and saved sing-box JSONC start unknown, so the first full Apply in a process always reconciles nftables and configured sing-box, including automatic startup Apply. They are invalidated when an apply attempt begins and published only after all full-Apply steps succeed; failed or cancelled attempts therefore cannot skip reconciliation on retry, including after a config revert. Forced backup restore bypasses these content comparisons. Unchanged running sing-box is left alone; configured inactive sing-box is started. Missing/drifted JSONC is replaced from saved configuration, and read errors other than absence propagate. nftables syntax checking still runs on full Apply even when its rules are unchanged; no live kernel-ruleset comparison is performed, so external modifications to owned tables require a forced restore or a startup with the flag removed to reinstall unchanged rules. Keep console access and review configuration before applying network changes.
 
-The sing-box API preserves raw JSONC in `singbox.config`: GET returns the saved text, and PUT validates an isolated `0600` staging file when the binary exists, then saves only routerd configuration under the operation lock. Save creates normal config backups; restore includes this text. Full Apply stages validation again, then atomically deploys the exact text at `0600` before service reconciliation. Empty text is rejected. Existing deployed JSONC is not automatically imported: paste it into the WebUI and Save to migrate. An absent section, including an older backup, leaves existing external files/services untouched. Startup modes never read or write the deployed sing-box file, validate it externally, or control its service.
+The sing-box API preserves raw JSONC in `singbox.config`: GET returns the saved text, and PUT validates an isolated `0600` staging file when the binary exists, then saves only routerd configuration under the operation lock. Save creates normal config backups; restore includes this text. Full Apply stages validation again, then atomically deploys the exact text at `0600` before service reconciliation. Empty text is rejected. Existing deployed JSONC is not automatically imported: paste it into the WebUI and Save to migrate. An absent section, including an older backup, leaves existing external files/services untouched. Automatic full Apply on startup includes this sing-box behavior; flag-only starts and initialization skip it.
 
 ### nftables Layout
 
@@ -390,7 +390,7 @@ only exact previously-owned obsolete rules are removed. Matching includes priori
 mark, mask, protocol, action/table and absence of additional selectors. Conflicting
 administrator rules fail Apply; no table or policy-rule collection is flushed.
 Native ip-rule reads use detailed numeric JSON so protocol ownership is explicit.
-Normal startup reconciles these ephemeral policies too. As with other apply state,
+Startup full Apply reconciles these ephemeral policies too; flag-only starts leave them untouched. As with other apply state,
 there is no durable ownership journal beyond the saved config/in-memory snapshot.
 
 Validation restricts `route_via` to forward Accept rules, IPv4 matches and configured
@@ -451,12 +451,14 @@ API section writes use the configuration operation lock and never apply.
 
 Apply suspends reconnect repairs, then reconciles shaping after service/routing
 operations. Required netlink failures propagate and are exposed by shaper status;
-only successful Apply activates the background reconciler. Every five seconds it
-uses the last successful configuration under the same operation lock, repairing
-missing/recreated links without activating saved drafts. `--init` alone never
+Successful Apply activates the background reconciler. Flag-only startup resumes
+it from the loaded saved configuration; the presence-only boot flag cannot detect
+saved shaper edits across a daemon restart. Within a running process, every five
+seconds it uses the last activated configuration under the same operation lock,
+repairing missing/recreated links without activating newer saved drafts. `--init` alone never
 activates it. Like other Apply operations, shaping is not transactional: partial
-changes may remain on failure, and a new explicit Apply is needed to resume
-background repairs after an Apply failure.
+changes may remain on failure. Explicit Apply or startup with the now-missing
+flag retries reconciliation before resuming background repairs.
 
 Egress CAKE lives at an owned root handle, with best-effort classification,
 NAT-aware source/destination host isolation, and GSO splitting. Ingress uses an
@@ -465,7 +467,7 @@ CAKE in ingress mode; its MTU follows the selected device. LAN-facing profiles r
 PPPoE resolves the configured parent to `ppp0`; traffic marks used by WAN policy
 routing and TPROXY are untouched.
 
-`/run/routerd-shaper/ownership.json` is a private atomic journal, written before
+`/run/routerd/shaper/ownership.json` is a private atomic ownership file, written before
 mutations and retained across daemon restarts. It records device indices, profile
 IDs, directions, and IFB identities; IFB aliases and redirect action cookies add
 kernel identity checks. Preflight checks all intended changes and cleanup
@@ -475,6 +477,9 @@ hooks/filters, and unjournalled IFB name collisions are conflicts. Cleanup reche
 never flushes device filters globally, and will refuse ambiguous administrator
 changes. If ownership metadata is lost or a crash leaves an untagged IFB, manual
 review may be required; unrelated traffic control is never adopted merely by name.
+
+For an upgrade without rebooting, move the existing `/run/routerd-shaper/` directory
+to `/run/routerd/shaper/` when deploying the updated binary, preserving permissions.
 
 The ignored native shaper test always enters an isolated network namespace. It
 exercises CAKE/IFB creation, cookies and aliases, foreign-filter protection,
@@ -519,8 +524,11 @@ for equal pairs; arbitrary address populations may be skewed. No per-client
 assignment table is maintained.
 
 The runtime captures installed configuration, never saved drafts. Only successful
-full Apply or `--boot` nftables installation activates it; normal startup and
-`--init` do not. Boot-mode probing relies on existing WAN policy rules and routes.
+full Apply activates it, including automatic startup Apply. A flag-only restart
+resumes it after checking installed map fingerprints, keys, and routing marks
+against saved groups; mismatches leave it suspended with an explicit-Apply error.
+Installed bucket shares are loaded for status without reinstalling tables, and selected members retain provisional health until probes reach the failure threshold.
+`--init` does not activate it.
 Full Apply suspends it before runtime changes; generation checks discard probes
 that finish after a suspend or reconfiguration. Slow probes hold neither the
 operation lock nor the runtime mutex. Publication takes the operation lock and
@@ -533,8 +541,8 @@ observed health; it does not inspect external kernel drift.
 
 PPP return defaults are additionally rendered as a fixed managed `ip-up.d` hook
 (`0700`). Its content participates in PPP file comparison against disk and the
-previous successful configuration. Normal startup/full Apply atomically install
-it before requesting a PPP start/restart; boot/init skip installation. The peer's
+previous successful configuration. Full Apply, including startup when the flag is missing, atomically installs
+it before requesting a PPP start/restart; flag-only starts and init skip installation. The peer's
 `ipparam routerd-isp` scopes execution to the managed `ppp0` connection. The hook
 replaces only the configured table's interface default (`proto static`, scope
 link), after IPCP address setup and on reconnect, retaining other prefixes and the
@@ -576,7 +584,7 @@ routerd --init -c /etc/router
     └── exit successfully without starting metrics collection or web UI/API
 ```
 
-Initialization leaves network managers, network service configs, addresses, routes, and firewall rules untouched. Init refuses existing config/unit paths (including symlinks) before writing. Successful initialization creates `/etc/systemd/system/routerd.service` atomically without replacement at `0644`, then runs `systemctl daemon-reload` with a 30-second timeout and cancellation-safe child cleanup. Write/execution/nonzero/timeout errors abort startup; reload errors report that the unit is already installed. It never enables or starts/restarts the unit. The unit preserves the current executable, absolute config/TLS paths, and listen/log options, but omits `--init`, using normal startup when manually started/enabled. Unit arguments escape systemd specifier/environment expansion and reject control characters. The default config directory is `/etc/routerd/`. Concurrent file creation is rejected without replacement; later failures can leave a partial installation requiring manual review before retry. Tests use temporary unit paths and fake systemctl only. Starting without `--init` or `--boot` uses the partial normal-startup pipeline above; `--boot` instead restores only nftables. The generated configuration is a router draft, not a complete import of the existing network setup.
+Initialization leaves network managers, network service configs, addresses, routes, and firewall rules untouched. Init refuses existing config/unit paths (including symlinks) before writing. Successful initialization creates `/etc/systemd/system/routerd.service` atomically without replacement at `0644`, then runs `systemctl daemon-reload` with a 30-second timeout and cancellation-safe child cleanup. Write/execution/nonzero/timeout errors abort startup; reload errors report that the unit is already installed. It never enables or starts/restarts the unit. The unit preserves the current executable, absolute config/TLS paths, and listen/log options, but omits `--init`, using normal startup when manually started/enabled. Existing units are not overwritten or automatically migrated; remove any obsolete `--boot` argument from their `ExecStart` and reload systemd. Unit arguments escape systemd specifier/environment expansion and reject control characters. The default config directory is `/etc/routerd/`. Concurrent file creation is rejected without replacement; later failures can leave a partial installation requiring manual review before retry. Tests use temporary unit paths and fake systemctl only. Normal startup uses the boot-flag-controlled pipeline above. The generated configuration is a router draft, not a complete import of the existing network setup.
 
 ## Repository Layout
 

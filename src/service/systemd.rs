@@ -95,7 +95,7 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::read_to_string(&calls).unwrap(), "daemon-reload\n");
         assert!(std::fs::read_to_string(&unit).unwrap().contains(
-            "ExecStart=\"/usr/local/bin/routerd\" \"--config-dir\" \"/tmp/config space\""
+            "ExecStart=\"/usr/local/bin/routerd\" \"--config-dir\" \"/tmp/config space\"\n"
         ));
         assert_eq!(
             std::fs::metadata(&unit).unwrap().permissions().mode() & 0o777,

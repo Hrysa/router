@@ -44,6 +44,12 @@ impl ConfigStore {
         })
     }
 
+    /// Enable the boot-scoped flag only for the real daemon; tests inject temporary paths.
+    pub fn with_startup_flag(mut self, path: PathBuf) -> Self {
+        self.apply_state.set_startup_flag(path);
+        self
+    }
+
     /// Get a clone of the current config.
     pub async fn get(&self) -> Config {
         self.inner.read().await.clone()

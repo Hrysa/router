@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Edit2, Plus, Trash2 } from 'react-feather';
-import { checked, Editor, integer, text } from '../components/Editor';
+import { Editor, integer, text } from '../components/Editor';
 import type { Field, Values } from '../components/Editor';
 import { getConfig, write } from '../lib/api';
+import { list } from '../lib/format';
 import { interfaceDisplayName } from '../lib/interfaces';
 import { useApi, useConfig } from '../lib/queries';
 import type { InterfaceConfig, WanGroup, WanGroupStatus } from '../lib/types';
@@ -15,16 +16,17 @@ export function groupFromValues(
   wans: InterfaceConfig[],
   original?: WanGroup,
 ): WanGroup {
-  const members = wans.flatMap((wan, index) =>
-    checked(values, `member_${index}`)
-      ? [{
-          interface: wan.name,
-          tier: integer(values, `tier_${index}`, 1, 65535),
-          weight: integer(values, `weight_${index}`, 1, 100),
-        }]
-      : [],
-  );
-  if (!members.length) throw new Error('Select at least one WAN member.');
+  const selected = [...new Set(list(text(values, 'members')))];
+  if (!selected.length) throw new Error('Select at least one WAN member.');
+  const members = selected.map((name) => {
+    const index = wans.findIndex((wan) => wan.name === name);
+    if (index < 0) throw new Error(`WAN ${name} is unavailable or has return routing disabled. Select an available WAN.`);
+    return {
+      interface: name,
+      tier: integer(values, `tier_${index}`, 1, 65535),
+      weight: integer(values, `weight_${index}`, 1, 100),
+    };
+  });
   const targets = text(values, 'targets').split(/[\s,]+/).filter(Boolean);
   if (
     !targets.length || targets.length > 4 ||
@@ -66,25 +68,29 @@ function GroupEditor({
       name: 'targets', label: 'Health probe targets', required: true,
       hint: 'Comma-separated IPv4 addresses that answer ICMP. A member is reachable when any target answers through its WAN.',
     },
-    ...wans.flatMap((wan, index): Field[] => [
-      {
-        name: `member_${index}`,
-        label: `Include ${interfaceDisplayName(wan.name, wans)}`,
-        type: 'toggle',
-      },
-      {
-        name: `tier_${index}`, label: `${wan.name} tier`, type: 'number',
-        min: 1, max: 65535, required: true,
-        when: (values) => checked(values, `member_${index}`),
-        hint: 'Lower tiers take priority. A higher tier is used only when every member of lower tiers is unhealthy.',
-      },
-      {
-        name: `weight_${index}`, label: `${wan.name} weight`, type: 'number',
-        min: 1, max: 100, required: true,
-        when: (values) => checked(values, `member_${index}`),
-        hint: 'Relative share of client source IPs among healthy members in the active tier.',
-      },
-    ]),
+    {
+      name: 'members', label: 'WAN members', type: 'interface',
+      multiple: true, required: true, wide: true,
+      allowedInterfaces: wans.map((wan) => wan.name),
+      placeholder: 'Select WAN interfaces',
+      hint: 'Choose WANs with return routing enabled, then configure their tiers and weights below.',
+    },
+    ...wans.map((wan, index): Field => ({
+      name: `wan_${index}`, label: interfaceDisplayName(wan.name, wans), type: 'section',
+      when: (values) => list(text(values, 'members')).includes(wan.name),
+      fields: [
+        {
+          name: `tier_${index}`, label: `${wan.name} tier`, type: 'number',
+          min: 1, max: 65535, required: true,
+          hint: 'Lower tiers take priority. A higher tier is used only when every member of lower tiers is unhealthy.',
+        },
+        {
+          name: `weight_${index}`, label: `${wan.name} weight`, type: 'number',
+          min: 1, max: 100, required: true,
+          hint: 'Relative share of client source IPs among healthy members in the active tier.',
+        },
+      ],
+    })),
     {
       name: 'interval_seconds', label: 'Probe interval (seconds)',
       type: 'number', min: 2, max: 300, required: true,
@@ -108,6 +114,7 @@ function GroupEditor({
   ];
   const initial: Values = {
     name: group?.name ?? '',
+    members: group?.members.map((member) => member.interface).join(', ') ?? '',
     targets: group?.targets.join(', ') ?? '1.1.1.1, 8.8.8.8',
     interval_seconds: String(group?.interval_seconds ?? 5),
     timeout_seconds: String(group?.timeout_seconds ?? 2),
@@ -117,7 +124,6 @@ function GroupEditor({
   };
   wans.forEach((wan, index) => {
     const member = group?.members.find((item) => item.interface === wan.name);
-    initial[`member_${index}`] = Boolean(member);
     initial[`tier_${index}`] = String(member?.tier ?? 1);
     initial[`weight_${index}`] = String(member?.weight ?? 1);
   });

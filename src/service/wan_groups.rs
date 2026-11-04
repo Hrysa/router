@@ -1,5 +1,6 @@
 //! Background health and atomic bucket-map reconciliation. No saved drafts or
-//! startup-only reconciliation can activate this worker's network writes.
+//! initialization can activate this worker's network writes. Flag-only startup
+//! resumes monitoring only against compatible installed maps.
 use crate::config::{
     routing::wan_return_routes,
     wan_groups::{self, WanGroup},
@@ -86,6 +87,143 @@ pub async fn activate(config: &Config, maps_reset: bool) {
     state.enabled = true;
     state.error = None;
     state.generation = state.generation.wrapping_add(1);
+}
+
+/// Resume after a daemon restart without reinstalling firewall tables. A saved
+/// draft must not replace a different installed group policy through monitoring.
+pub async fn resume(config: &Config) {
+    if config.wan_groups.is_empty() {
+        return;
+    }
+    let result = async {
+        let nft = find_command("nft")?;
+        let result = output(
+            &nft,
+            &[
+                "-j".into(),
+                "list".into(),
+                "table".into(),
+                "inet".into(),
+                "mangle".into(),
+            ],
+        )
+        .await?;
+        ensure!(
+            result.status.success(),
+            "cannot inspect installed WAN-group maps; explicit Apply required"
+        );
+        let installed: Value = serde_json::from_slice(&result.stdout)?;
+        let maps = resumed_maps(config, &installed)?;
+        let health = resumed_health(config, &maps)?;
+        Ok::<_, anyhow::Error>((maps, health))
+    }
+    .await;
+    match result {
+        Ok((maps, health)) => {
+            activate(config, false).await;
+            let mut state = runtime().lock().await;
+            state.installed = Some(maps);
+            state.health = health;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "WAN-group monitoring could not resume; explicit Apply required");
+            let mut state = runtime().lock().await;
+            state.config = Some(config.clone());
+            state.enabled = false;
+            state.error = Some(error.to_string());
+        }
+    }
+}
+
+fn resumed_health(config: &Config, maps: &Value) -> Result<BTreeMap<(u32, String), Health>> {
+    let routes = wan_return_routes(config)?;
+    let mut health = BTreeMap::new();
+    for group in &config.wan_groups {
+        let name = wan_groups::map_name(group.id, false);
+        let elements = maps["nftables"]
+            .as_array()
+            .and_then(|commands| {
+                commands
+                    .iter()
+                    .find(|command| command["add"]["element"]["name"] == name)
+            })
+            .and_then(|command| command["add"]["element"]["elem"].as_array());
+        for member in &group.members {
+            let selected = routes
+                .iter()
+                .find(|route| route.name == member.interface)
+                .is_some_and(|route| {
+                    elements.is_some_and(|elements| {
+                        elements.iter().any(|element| element[1] == route.mark())
+                    })
+                });
+            health.insert(
+                (group.id, member.interface.clone()),
+                Health {
+                    healthy: selected,
+                    reason: "Restored installed selection; awaiting probe".into(),
+                    ..Default::default()
+                },
+            );
+        }
+    }
+    Ok(health)
+}
+
+fn resumed_maps(config: &Config, installed: &Value) -> Result<Value> {
+    let objects = installed["nftables"]
+        .as_array()
+        .context("invalid installed nftables document")?;
+    let routes = wan_return_routes(config)?;
+    let mut commands = Vec::new();
+    for group in &config.wan_groups {
+        for strict in [false, true] {
+            let name = wan_groups::map_name(group.id, strict);
+            let map = objects
+                .iter()
+                .map(|object| &object["map"])
+                .find(|map| {
+                    map["family"] == "inet" && map["table"] == "mangle" && map["name"] == name
+                })
+                .context("WAN-group map missing; explicit Apply required")?;
+            ensure!(
+                map["comment"] == wan_groups::fingerprint(group),
+                "WAN-group policy differs from saved config; explicit Apply required"
+            );
+            let elements = map["elem"]
+                .as_array()
+                .context("WAN-group map elements missing; explicit Apply required")?;
+            ensure!(
+                elements.len() == wan_groups::BUCKETS as usize,
+                "incomplete WAN-group map; explicit Apply required"
+            );
+            for (bucket, element) in elements.iter().enumerate() {
+                // nft may return elements in any order; verify the full key set.
+                let key = format!("0.0.0.{bucket}");
+                ensure!(
+                    elements.iter().filter(|element| element[0] == key).count() == 1,
+                    "invalid WAN-group bucket keys; explicit Apply required"
+                );
+                ensure!(
+                    element[1] == 0
+                        || group.members.iter().any(|member| {
+                            routes.iter().any(|route| {
+                                route.name == member.interface
+                                    && element[1]
+                                        == if strict {
+                                            route.strict_mark()
+                                        } else {
+                                            route.mark()
+                                        }
+                            })
+                        }),
+                    "WAN-group routing marks differ from saved config; explicit Apply required"
+                );
+            }
+            commands.push(json!({"add":{"element":{"family":"inet","table":"mangle","name":name,"elem":elements}}}));
+        }
+    }
+    Ok(json!({"nftables": commands}))
 }
 
 fn runtime_status(state: &Runtime) -> Value {
@@ -352,6 +490,66 @@ async fn tick(store: &ConfigStore) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_preserves_buckets_and_rejects_missing_or_changed_policy() {
+        let mut config = crate::config::routing::test_config();
+        config.wan_groups.push(WanGroup {
+            id: 1,
+            name: "failover".into(),
+            members: vec![wan_groups::Member {
+                interface: "wan0".into(),
+                tier: 1,
+                weight: 1,
+            }],
+            ..Default::default()
+        });
+        let health = BTreeMap::from([(
+            (1, "wan0".into()),
+            Health {
+                healthy: true,
+                ..Default::default()
+            },
+        )]);
+        let update = map_update(&config, &health).unwrap();
+        let maps: Vec<_> = [false, true]
+            .into_iter()
+            .enumerate()
+            .map(|(index, strict)| {
+                json!({"map": {
+                    "family": "inet", "table": "mangle", "name": wan_groups::map_name(1, strict),
+                    "comment": wan_groups::fingerprint(&config.wan_groups[0]),
+                    "elem": update["nftables"][index * 2 + 1]["add"]["element"]["elem"]
+                }})
+            })
+            .collect();
+        let installed = json!({"nftables": maps});
+        let resumed = resumed_maps(&config, &installed).unwrap();
+        let mut health = resumed_health(&config, &resumed).unwrap();
+        assert!(health[&(1, "wan0".into())].healthy);
+        // A single failed probe on daemon restart must not immediately clear
+        // the installed tier before its configured failure threshold.
+        health.get_mut(&(1, "wan0".into())).unwrap().observe(
+            false,
+            "down".into(),
+            &config.wan_groups[0],
+            Instant::now(),
+        );
+        assert!(health[&(1, "wan0".into())].healthy);
+        assert_eq!(resumed["nftables"][0]["add"], update["nftables"][1]["add"]);
+        assert!(resumed_maps(&config, &json!({"nftables": []})).is_err());
+        for change in ["comment", "mark", "key"] {
+            let mut changed = installed.clone();
+            match change {
+                "comment" => changed["nftables"][0]["map"]["comment"] = json!("old policy"),
+                "mark" => changed["nftables"][0]["map"]["elem"][0][1] = json!(123),
+                _ => changed["nftables"][0]["map"]["elem"][0][0] = json!("0.0.0.1"),
+            }
+            assert!(resumed_maps(&config, &changed).is_err());
+        }
+        config.wan_groups[0].members[0].tier = 2;
+        assert!(resumed_maps(&config, &installed).is_err());
+    }
     #[test]
     fn health_hysteresis_and_delayed_recovery() {
         let group = WanGroup::default();

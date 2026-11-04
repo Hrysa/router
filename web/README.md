@@ -23,7 +23,7 @@ cargo run -- --init -c /tmp/routerd-dev --listen 127.0.0.1:8443
 
 `routerd --install-singbox -c <config-dir>` is a separate config/unit setup command: it requires saved `singbox.config`, overwrites both the deployed JSONC and systemd unit even when they exist, runs `systemctl daemon-reload` after both writes succeed, then exits. Reload failures/timeouts fail setup but leave the installed files in place. It does not download/install a binary, enable/start/restart services, change networking, or run the API. The unit expects `/usr/local/bin/sing-box` installed separately; enable/start/restart remains manual. It does not modify routerd configuration or mark a full Apply successful. Missing/empty saved JSONC is an error, not a request to invent a default config.
 
-Normal daemon startup reconciles other saved network setup and runs startup hooks, but leaves nftables and sing-box untouched. `--boot` instead checks/installs only saved nftables rules, then serves the UI/API; it skips other services, routes, shaping, offloads, and hooks. Systemd manages sing-box startup. Neither mode marks the full configuration applied, so the first explicit Apply remains available and retains full service reconciliation, including sing-box. Boot mode is not a replacement for provisioning TPROXY/WAN policy routes or other network dependencies.
+Normal daemon startup runs full Apply when `/run/routerd/applied` is missing and creates the empty flag only after success. This includes nftables and configured sing-box. Later starts with the flag present skip Apply and resume background monitoring; compatible installed WAN-group maps are required. Hooks still run on every normal startup. API Apply and restore invalidate the flag before attempting Apply and recreate it after success. `/run` clears on reboot; the flag does not track saved edits or live drift. Flag-only restarts leave explicit Apply available. The old `--boot` option has been removed.
 
 ## Validation and production
 
@@ -145,3 +145,7 @@ WAN groups select with source IPv4 modulo 256 and smoothly interleaved weighted
 slots, without hashing or per-client state. Equal pairs alternate even/odd client
 addresses. Other weight ratios are rounded to 256 slots using largest remainders.
 This balances consecutive addresses; arbitrary active IPs and bandwidth can skew.
+
+WAN-group editors reuse the firewall interface multi-select, limited to WANs with
+return routing enabled. Each selected WAN has its own tier/weight section; hidden
+sections retain draft values when a member is deselected and selected again.

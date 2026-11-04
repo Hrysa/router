@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::sync::{Mutex, MutexGuard};
 
 use crate::config::diff::ChangeSet;
@@ -21,6 +21,7 @@ pub struct ApplyResult {
 #[derive(Default)]
 pub struct ApplyState {
     last_successful: Mutex<Option<AppliedServices>>,
+    startup_flag: Option<StartupFlag>,
 }
 
 impl ApplyState {
@@ -67,71 +68,64 @@ impl AppliedServices {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ApplyMode {
-    Full,
-    Startup,
+/// Presence records a successful full Apply during this OS boot, not host health.
+#[derive(Debug)]
+struct StartupFlag(PathBuf);
+
+impl StartupFlag {
+    fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+
+    fn exists(&self) -> Result<bool> {
+        match std::fs::symlink_metadata(&self.0) {
+            Ok(metadata) => {
+                anyhow::ensure!(
+                    metadata.is_file(),
+                    "startup flag must be a regular file: {}",
+                    self.0.display()
+                );
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn invalidate(&self) -> Result<()> {
+        match std::fs::remove_file(&self.0) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn publish(&self) -> Result<()> {
+        let parent = self
+            .0
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("startup flag has no parent"))?;
+        std::fs::create_dir_all(parent)?;
+        crate::service::files::atomic_write(&self.0, b"", 0o600)
+    }
 }
 
-impl ApplyMode {
-    fn service_snapshot(self, rendered: &RenderedConfigs) -> Option<AppliedServices> {
-        if self == Self::Startup {
-            return None;
-        }
-        Some(AppliedServices {
+impl ApplyState {
+    pub fn set_startup_flag(&mut self, path: PathBuf) {
+        self.startup_flag = Some(StartupFlag::new(path));
+    }
+}
+
+impl AppliedServices {
+    fn from_rendered(rendered: &RenderedConfigs) -> Self {
+        Self {
             nftables: rendered.nftables.clone(),
             singbox: rendered
                 .singbox
                 .as_ref()
                 .map(|content| content.as_bytes().to_vec()),
-        })
+        }
     }
-}
-
-trait NftablesControl {
-    async fn check(&self, rendered: &str) -> Result<()>;
-    async fn install(&self, rendered: &str) -> Result<()>;
-}
-
-impl NftablesControl for ServiceManager {
-    async fn check(&self, rendered: &str) -> Result<()> {
-        self.check_nftables_json(rendered).await
-    }
-
-    async fn install(&self, rendered: &str) -> Result<()> {
-        self.apply_nftables_json(rendered).await
-    }
-}
-
-pub async fn boot_nftables(
-    config: &Config,
-    service_manager: &ServiceManager,
-) -> Result<ApplyResult> {
-    let result = boot_nftables_with(config, service_manager).await?;
-    crate::service::wan_groups::activate(config, true).await;
-    Ok(result)
-}
-
-async fn boot_nftables_with(
-    config: &Config,
-    service_manager: &impl NftablesControl,
-) -> Result<ApplyResult> {
-    let errors = crate::config::validator::validate(config);
-    if !errors.is_empty() {
-        anyhow::bail!("config validation failed: {:?}", errors);
-    }
-    let rendered = renderer::nftables::render(config)?;
-    service_manager.check(&rendered).await?;
-    service_manager.install(&rendered).await?;
-    Ok(ApplyResult {
-        success: true,
-        services_restarted: vec!["nftables".into()],
-        errors: Vec::new(),
-        changeset: ChangeSet {
-            nftables: true,
-            ..Default::default()
-        },
-    })
 }
 
 pub async fn startup(
@@ -139,13 +133,36 @@ pub async fn startup(
     service_manager: &ServiceManager,
     apply_state: &ApplyState,
 ) -> Result<ApplyResult> {
-    apply_with_mode(
+    let errors = crate::config::validator::validate(config);
+    if !errors.is_empty() {
+        anyhow::bail!("config validation failed: {:?}", errors);
+    }
+    if apply_state
+        .startup_flag
+        .as_ref()
+        .map(StartupFlag::exists)
+        .transpose()?
+        .unwrap_or(false)
+    {
+        // Do not seed successful service snapshots from a presence-only flag.
+        // Explicit Apply must still be available after a daemon restart.
+        crate::service::wan_groups::resume(config).await;
+        crate::service::shaper::activate(config).await;
+        tracing::info!("startup Apply skipped: boot flag exists; background monitoring resumed");
+        return Ok(ApplyResult {
+            success: true,
+            services_restarted: Vec::new(),
+            errors: Vec::new(),
+            changeset: ChangeSet::default(),
+        });
+    }
+    apply(
         config,
         config,
+        Path::new(""),
         service_manager,
         apply_state,
         false,
-        ApplyMode::Startup,
     )
     .await
 }
@@ -161,26 +178,10 @@ pub async fn apply(
     apply_state: &ApplyState,
     force: bool,
 ) -> Result<ApplyResult> {
-    apply_with_mode(
-        config,
-        prev_config,
-        service_manager,
-        apply_state,
-        force,
-        ApplyMode::Full,
-    )
-    .await
-}
-
-async fn apply_with_mode(
-    config: &Config,
-    prev_config: &Config,
-    service_manager: &ServiceManager,
-    apply_state: &ApplyState,
-    force: bool,
-    mode: ApplyMode,
-) -> Result<ApplyResult> {
     let attempt = apply_state.begin().await;
+    if let Some(flag) = &apply_state.startup_flag {
+        flag.invalidate()?;
+    }
     let errors = crate::config::validator::validate(config);
     if !errors.is_empty() {
         anyhow::bail!("config validation failed: {:?}", errors);
@@ -189,21 +190,16 @@ async fn apply_with_mode(
     let rendered = render_all(config)?;
 
     // Syntax check rendered configs
-    syntax_check(&rendered, service_manager, mode).await?;
+    syntax_check(&rendered, service_manager).await?;
 
-    let applied_services = mode.service_snapshot(&rendered);
-    let (nftables, mut singbox) = applied_services
-        .as_ref()
-        .map(|applied| applied.changes_from(attempt.previous.as_ref(), force))
-        .unwrap_or((false, false));
+    let applied_services = AppliedServices::from_rendered(&rendered);
+    let (nftables, mut singbox) = applied_services.changes_from(attempt.previous.as_ref(), force);
     singbox &= rendered.singbox.is_some();
-    if mode == ApplyMode::Full {
-        if let Some(content) = &rendered.singbox {
-            singbox |= crate::service::singbox::config_changed(
-                Path::new(crate::service::singbox::CONFIG_PATH),
-                content,
-            )?;
-        }
+    if let Some(content) = &rendered.singbox {
+        singbox |= crate::service::singbox::config_changed(
+            Path::new(crate::service::singbox::CONFIG_PATH),
+            content,
+        )?;
     }
 
     // Detect changes by comparing rendered configs against files on disk
@@ -234,9 +230,7 @@ async fn apply_with_mode(
 
     tracing::debug!(?changeset, "detected service config changes");
 
-    if mode == ApplyMode::Full {
-        crate::service::wan_groups::suspend().await;
-    }
+    crate::service::wan_groups::suspend().await;
     crate::service::shaper::suspend().await;
     crate::service::shaper::preflight_config(config).await?;
 
@@ -249,7 +243,7 @@ async fn apply_with_mode(
 
     // Restart changed services
     let services_restarted =
-        restart_services(config, &rendered, &changeset, service_manager, mode).await?;
+        restart_services(config, &rendered, &changeset, service_manager).await?;
     crate::service::wan_policy::cleanup(prev_config, config).await?;
 
     // Always set up tproxy routing (ip rule + ip route) — these are ephemeral
@@ -259,12 +253,13 @@ async fn apply_with_mode(
     }
 
     crate::service::shaper::reconcile(config).await?;
-    crate::service::shaper::activate(config).await;
 
-    if let Some(applied_services) = applied_services {
-        crate::service::wan_groups::activate(config, changeset.nftables).await;
-        attempt.commit(applied_services);
+    if let Some(flag) = &apply_state.startup_flag {
+        flag.publish()?;
     }
+    crate::service::shaper::activate(config).await;
+    crate::service::wan_groups::activate(config, changeset.nftables).await;
+    attempt.commit(applied_services);
 
     tracing::info!(
         services = ?services_restarted,
@@ -379,18 +374,12 @@ struct RenderedConfigs {
 }
 
 /// Syntax-check rendered configs before applying.
-async fn syntax_check(
-    rendered: &RenderedConfigs,
-    service_manager: &ServiceManager,
-    mode: ApplyMode,
-) -> Result<()> {
-    if mode == ApplyMode::Full {
-        service_manager
-            .check_nftables_json(&rendered.nftables)
-            .await?;
-        if let Some(content) = &rendered.singbox {
-            crate::service::singbox::validate_config(content).await?;
-        }
+async fn syntax_check(rendered: &RenderedConfigs, service_manager: &ServiceManager) -> Result<()> {
+    service_manager
+        .check_nftables_json(&rendered.nftables)
+        .await?;
+    if let Some(content) = &rendered.singbox {
+        crate::service::singbox::validate_config(content).await?;
     }
 
     // Write kea-dhcp4 to staged file and check (optional — may not be installed)
@@ -744,7 +733,6 @@ async fn restart_services(
     rendered: &RenderedConfigs,
     changeset: &ChangeSet,
     service_manager: &ServiceManager,
-    mode: ApplyMode,
 ) -> Result<Vec<String>> {
     let mut restarted = Vec::new();
 
@@ -755,7 +743,7 @@ async fn restart_services(
             .apply_nftables_json(&rendered.nftables)
             .await?;
         restarted.push("nftables".into());
-    } else if mode == ApplyMode::Full {
+    } else {
         tracing::info!("nftables config unchanged, skipping");
     }
 
@@ -824,7 +812,7 @@ async fn restart_services(
         }
     }
 
-    if mode == ApplyMode::Full && rendered.singbox.is_some() {
+    if rendered.singbox.is_some() {
         reconcile_singbox(changeset.singbox, service_manager, &mut restarted).await?;
     }
 
@@ -905,99 +893,71 @@ fn ppp_enabled(config: &Config) -> bool {
 mod tests {
     use super::*;
 
-    #[derive(Default)]
-    struct FakeNftables {
-        calls: std::sync::Mutex<Vec<(&'static str, String)>>,
-        fail_check: bool,
-        fail_install: bool,
-    }
-
-    impl NftablesControl for FakeNftables {
-        async fn check(&self, rendered: &str) -> Result<()> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(("check", rendered.to_owned()));
-            anyhow::ensure!(!self.fail_check, "nftables check failed");
-            Ok(())
-        }
-
-        async fn install(&self, rendered: &str) -> Result<()> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(("install", rendered.to_owned()));
-            anyhow::ensure!(!self.fail_install, "nftables install failed");
-            Ok(())
-        }
+    #[test]
+    fn startup_flag_lifecycle_and_filesystem_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = crate::service::files::StagedDirectory::new().unwrap();
+        let path = directory.path().join("run/routerd/applied");
+        let flag = StartupFlag::new(path.clone());
+        assert!(!flag.exists().unwrap());
+        flag.invalidate().unwrap();
+        flag.publish().unwrap();
+        assert!(flag.exists().unwrap());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        flag.invalidate().unwrap();
+        assert!(!flag.exists().unwrap());
+        std::fs::create_dir(&path).unwrap();
+        assert!(flag.exists().is_err());
+        assert!(flag.invalidate().is_err());
+        assert!(flag.publish().is_err());
     }
 
     #[tokio::test]
-    async fn boot_checks_then_installs_only_nftables() {
+    async fn failed_apply_removes_flag_and_does_not_publish_a_snapshot() {
+        let directory = crate::service::files::StagedDirectory::new().unwrap();
+        let path = directory.path().join("applied");
+        StartupFlag::new(path.clone()).publish().unwrap();
+        let mut state = ApplyState::default();
+        state.set_startup_flag(path.clone());
+        let mut config = Config::default();
+        config.firewall.default_policy.input = "invalid".into();
+        assert!(apply(
+            &config,
+            &config,
+            Path::new(""),
+            &ServiceManager::new(),
+            &state,
+            false
+        )
+        .await
+        .is_err());
+        assert!(!path.exists());
+        assert!(state.pending(&config, &config).await);
+    }
+
+    #[tokio::test]
+    async fn existing_flag_skips_all_apply_checks_and_keeps_explicit_apply_available() {
+        let directory = crate::service::files::StagedDirectory::new().unwrap();
+        let path = directory.path().join("applied");
+        StartupFlag::new(path.clone()).publish().unwrap();
+        let mut state = ApplyState::default();
+        state.set_startup_flag(path.clone());
         let config = Config {
             singbox: Some(crate::config::schema::Singbox {
-                config: "not JSONC: boot must not validate or deploy this".into(),
+                config: "not valid JSONC; skip must not run external syntax checks".into(),
             }),
             ..Default::default()
         };
-        let manager = FakeNftables::default();
-        let result = boot_nftables_with(&config, &manager).await.unwrap();
-        let rendered = renderer::nftables::render(&config).unwrap();
-        assert_eq!(
-            *manager.calls.lock().unwrap(),
-            vec![("check", rendered.clone()), ("install", rendered)]
-        );
+        let result = startup(&config, &ServiceManager::new(), &state)
+            .await
+            .unwrap();
+        assert!(result.services_restarted.is_empty());
         assert!(result.success);
-        assert!(result.errors.is_empty());
-        assert_eq!(result.services_restarted, vec!["nftables"]);
-        assert_eq!(
-            serde_json::to_value(result.changeset).unwrap(),
-            serde_json::to_value(ChangeSet {
-                nftables: true,
-                ..Default::default()
-            })
-            .unwrap()
-        );
-    }
-
-    #[tokio::test]
-    async fn boot_requires_successful_nftables_check_before_installing() {
-        let manager = FakeNftables {
-            fail_check: true,
-            ..Default::default()
-        };
-        let error = boot_nftables_with(&Config::default(), &manager)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("nftables check failed"));
-        let calls = manager.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "check");
-    }
-
-    #[tokio::test]
-    async fn boot_propagates_nftables_install_failure() {
-        let manager = FakeNftables {
-            fail_install: true,
-            ..Default::default()
-        };
-        let error = boot_nftables_with(&Config::default(), &manager)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("nftables install failed"));
-        let calls = manager.calls.lock().unwrap();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[1].0, "install");
-    }
-
-    #[tokio::test]
-    async fn boot_rejects_invalid_config_before_nftables_commands() {
-        let mut config = Config::default();
-        config.firewall.default_policy.input = "invalid".into();
-        let manager = FakeNftables::default();
-        let error = boot_nftables_with(&config, &manager).await.unwrap_err();
-        assert!(error.to_string().contains("config validation failed"));
-        assert!(manager.calls.lock().unwrap().is_empty());
+        assert!(path.exists());
+        assert!(state.pending(&config, &config).await);
     }
 
     #[tokio::test]
@@ -1202,22 +1162,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn startup_skips_singbox_file_reads_and_has_no_full_apply_snapshot() {
-        let config = Config {
-            singbox: Some(crate::config::schema::Singbox {
-                config: "// saved JSONC\n{}".into(),
-            }),
-            ..Default::default()
-        };
-        let rendered = render_all(&config).unwrap();
-        assert!(ApplyMode::Startup.service_snapshot(&rendered).is_none());
-        assert_eq!(
-            ApplyMode::Full.service_snapshot(&rendered).unwrap().singbox,
-            Some(b"// saved JSONC\n{}".to_vec())
-        );
-    }
-
     #[tokio::test]
     async fn startup_rejects_invalid_config_before_touching_services() {
         let mut config = Config::default();
@@ -1290,11 +1234,9 @@ mod tests {
         };
         let state = ApplyState::default();
         let directory = crate::service::files::StagedDirectory::new().unwrap();
-        state.begin().await.commit(
-            ApplyMode::Full
-                .service_snapshot(&render_all(&config).unwrap())
-                .unwrap(),
-        );
+        state.begin().await.commit(AppliedServices::from_rendered(
+            &render_all(&config).unwrap(),
+        ));
         let mut changed = config.clone();
         changed.singbox.as_mut().unwrap().config = "// changed\n{}".into();
         assert!(state.pending(&changed, &config).await);
@@ -1346,11 +1288,8 @@ mod tests {
             }),
             ..Default::default()
         };
-        let snapshot = |config: &Config| {
-            ApplyMode::Full
-                .service_snapshot(&render_all(config).unwrap())
-                .unwrap()
-        };
+        let snapshot =
+            |config: &Config| AppliedServices::from_rendered(&render_all(config).unwrap());
         let previous = snapshot(&config);
         let mut changed = config.clone();
         changed.firewall.blackhole.push("203.0.113.1".into());

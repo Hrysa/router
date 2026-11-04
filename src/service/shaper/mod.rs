@@ -17,7 +17,7 @@ use std::{
 
 use tokio::sync::Mutex;
 
-const STATE_DIR: &str = "/run/routerd-shaper";
+const STATE_DIR: &str = "/run/routerd/shaper";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Owned {
     id: u32,
@@ -87,7 +87,11 @@ fn check_directory(directory: &Path) -> Result<()> {
 }
 fn save(directory: &Path, owned: &[Owned]) -> Result<()> {
     use std::os::unix::fs::DirBuilderExt;
-    match std::fs::DirBuilder::new().mode(0o700).create(directory) {
+    match std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(directory)
+    {
         Ok(()) => (),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
         Err(error) => return Err(error.into()),
@@ -534,7 +538,7 @@ mod tests {
     #[test]
     fn ownership_journal_is_atomic_and_root_claims_require_prior_ownership() {
         let temp = crate::service::files::StagedDirectory::new().unwrap();
-        let directory = temp.path().join("state");
+        let directory = temp.path().join("routerd/shaper");
         assert!(load(&directory).unwrap().is_empty());
         let owned = Owned {
             id: 1,

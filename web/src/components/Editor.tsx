@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Save } from 'react-feather';
 import { Modal, useUnsaved } from '../lib/ui';
 import { errorMessage } from '../lib/format';
@@ -15,7 +15,10 @@ export interface Field {
     | 'select'
     | 'textarea'
     | 'toggle'
-    | 'interface';
+    | 'interface'
+    | 'section';
+  fields?: Field[];
+  allowedInterfaces?: string[];
   multiple?: boolean;
   excludeField?: string;
   options?: (string | { value: string; label: string })[];
@@ -108,9 +111,16 @@ export function Editor({
         }}
       >
         <fieldset disabled={busy} className="form-grid">
-          {fields
-            .filter((field) => !field.when || field.when(values))
-            .map((field) => {
+          {fields.map(
+            function renderField(field): ReactNode {
+              if (field.when && !field.when(values)) return null;
+              if (field.type === 'section')
+                return (
+                  <fieldset key={field.name} className="editor-section field-wide">
+                    <legend>{field.label}</legend>
+                    <div className="form-grid">{field.fields?.map(renderField)}</div>
+                  </fieldset>
+                );
               const id = `edit-${field.name}`;
               const update = (value: string | boolean) =>
                 setValues((current) => ({ ...current, [field.name]: value }));
@@ -152,6 +162,7 @@ export function Editor({
                       value={raw(values, field.name)}
                       onChange={update}
                       multiple={field.multiple}
+                      allowedInterfaces={field.allowedInterfaces}
                       required={field.required}
                       disabled={field.disabled}
                       placeholder={field.placeholder}

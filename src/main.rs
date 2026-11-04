@@ -33,9 +33,6 @@ struct Args {
     #[arg(long)]
     init: bool,
 
-    #[arg(long, conflicts_with_all = ["init", "install_singbox"], help = "Apply only nftables at startup, then serve the API; leave sing-box to systemd")]
-    boot: bool,
-
     /// Path to TLS certificate (PEM). If set, --tls-key must also be set.
     #[arg(long, value_name = "PATH", requires = "tls_key")]
     tls_cert: Option<String>,
@@ -44,7 +41,7 @@ struct Args {
     #[arg(long, value_name = "PATH", requires = "tls_cert")]
     tls_key: Option<String>,
 
-    #[arg(long, conflicts_with_all = ["init", "boot"], help = "Overwrite sing-box config and systemd unit, reload systemd, then exit; no binary download or service start")]
+    #[arg(long, conflicts_with_all = ["init"], help = "Overwrite sing-box config and systemd unit, reload systemd, then exit; no binary download or service start")]
     install_singbox: bool,
 }
 
@@ -107,7 +104,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Load config
-    let config_store = config::ConfigStore::new(&args.config_dir)?;
+    let config_store = config::ConfigStore::new(&args.config_dir)?
+        .with_startup_flag("/run/routerd/applied".into());
+    let operation = config_store.lock_operation().await;
     let config = config_store.get().await;
 
     // Validate config
@@ -124,12 +123,6 @@ async fn main() -> anyhow::Result<()> {
             "initialization complete; host networking unchanged; review the config before manually starting routerd.service"
         );
         return Ok(());
-    } else if args.boot {
-        let service_manager = service::manager::ServiceManager::new();
-        service::apply::boot_nftables(&config, &service_manager).await?;
-        tracing::info!(
-            "boot mode: nftables restored; other services and startup hooks left untouched"
-        );
     } else {
         disable_offloads();
         service::hooks::run_hooks("before_start", &config.hooks.before_start).await?;
@@ -139,11 +132,13 @@ async fn main() -> anyhow::Result<()> {
             service::apply::startup(&config, &service_manager, config_store.apply_state()).await?;
         tracing::info!(
             services = ?apply_result.services_restarted,
-            "startup config reconciled without nftables or sing-box"
+            "startup reconciliation complete"
         );
 
+        config_store.mark_applied(&config).await;
         service::hooks::run_hooks("after_start", &config.hooks.after_start).await?;
     }
+    drop(operation);
 
     // Install the in-memory metrics recorder and start the interface/firewall collector.
     let metrics = crate::metrics::RouterdMetrics::new();
@@ -291,10 +286,10 @@ mod tests {
         let arguments = service_arguments(&args).unwrap();
         assert!(Path::new(&arguments[0]).is_absolute());
         assert!(Path::new(&arguments[2]).is_absolute());
-        assert!(!arguments
-            .iter()
-            .any(|argument| argument == "--init" || argument == "--boot"));
+        assert!(!arguments.iter().any(|argument| argument == "--init"));
+        assert!(!arguments.iter().any(|argument| argument == "--boot"));
         let parsed = Args::try_parse_from(arguments).unwrap();
+        assert!(!parsed.init);
         assert_eq!(parsed.listen, args.listen);
         assert_eq!(parsed.log_level, args.log_level);
         assert_eq!(parsed.log_format, args.log_format);
@@ -325,16 +320,8 @@ mod tests {
     }
 
     #[test]
-    fn boot_is_explicit_and_conflicts_with_other_startup_modes() {
-        let normal = Args::try_parse_from(["routerd"]).unwrap();
-        assert!(!normal.boot);
-        assert!(!normal.init);
-        let boot = Args::try_parse_from(["routerd", "--boot", "-c", "/tmp/routerd-test"]).unwrap();
-        assert!(boot.boot);
-        assert!(!boot.init);
-        assert_eq!(boot.config_dir, "/tmp/routerd-test");
-        assert!(Args::try_parse_from(["routerd", "--boot", "--init"]).is_err());
-        assert!(Args::try_parse_from(["routerd", "--boot", "--install-singbox"]).is_err());
+    fn removed_boot_option_is_rejected() {
+        assert!(Args::try_parse_from(["routerd", "--boot"]).is_err());
     }
 
     #[test]

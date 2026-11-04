@@ -20,6 +20,7 @@ export function InterfacePicker({
   placeholder,
   describedBy,
   exclude,
+  allowedInterfaces,
 }: {
   id: string;
   label: string;
@@ -31,6 +32,7 @@ export function InterfacePicker({
   placeholder?: string;
   describedBy?: string;
   exclude?: string;
+  allowedInterfaces?: string[];
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -65,6 +67,8 @@ export function InterfacePicker({
     live.data?.interfaces,
     selected,
     exclude,
+  ).filter((option) =>
+    !allowedInterfaces || allowedInterfaces.includes(option.name) || selected.includes(option.name),
   );
   return (
     <div
@@ -134,7 +138,16 @@ export function InterfacePicker({
             {options.map((option) => {
               const displayName = interfaceDisplayName(option.name, configured);
               return (
-                <label key={option.name} className="interface-picker-option">
+                <label
+                  key={option.name}
+                  className="interface-picker-option"
+                  onPointerDown={(event) => {
+                    // Keep focus inside the picker until the label's native
+                    // click activates its checkbox, including text/padding taps.
+                    if (!(event.target instanceof HTMLInputElement))
+                      event.preventDefault();
+                  }}
+                >
                   <input
                     type="checkbox"
                     aria-label={displayName}
