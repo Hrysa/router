@@ -107,13 +107,17 @@ prefix. Cleanup is limited to networkd files with this prefix:
 
 | File | Purpose |
 |------|---------|
-| `50-routerd-<interface>.network` | WAN interface (DHCP/static/PPPoE unmanaged) |
+| `50-routerd-<interface>.network` | WAN interface (DHCP/static/PPPoE parent activation) |
 | `50-routerd-ppp0.network` | PPPoE tunnel routing (if applicable) |
 | `50-routerd-<bridge>.netdev` | Bridge device definition |
 | `50-routerd-<bridge>.network` | Bridge static IP |
 | `50-routerd-<bridge>-slave.network` | Bridge member ports |
 | `50-routerd-<vlan-name>.netdev` | VLAN device definition |
 | `50-routerd-<vlan-name>.network` | VLAN DHCP/static configuration (filename uses interface name) |
+
+PPPoE physical interfaces are managed by networkd so they are brought up at boot
+and during network reconciliation. Their files disable DHCP and link-local
+addressing, independent of device MTU; `pppd` owns addressing on `ppp0`.
 
 ---
 

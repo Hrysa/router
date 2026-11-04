@@ -429,6 +429,9 @@ PPPoE start/restart requests use `systemctl --no-block` for `ppp@isp`. Apply and
 manual service controls wait only for job submission, not for dialing or reconnects.
 Submission errors still fail the request; later connection failures are reported by
 service status and the PPP journal. Successful Apply does not imply PPP connectivity.
+The generated networkd file brings the PPPoE physical interface up, with DHCP and
+link-local addressing disabled, whether or not a device MTU is configured. `pppd`
+manages addressing on `ppp0` and retries failed connections automatically.
 
 ## WAN groups
 

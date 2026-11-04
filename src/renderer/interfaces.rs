@@ -129,23 +129,16 @@ pub fn render(config: &Config) -> Result<Vec<NetworkFile>> {
 fn render_wan(iface: &InterfaceConfig, files: &mut Vec<NetworkFile>) {
     match iface.method {
         InterfaceMethod::Pppoe => {
-            // Physical interface: unmanaged (pppd handles it)
+            // networkd activates the parent link; pppd handles IP on ppp0.
             let content = format!(
                 "# Managed by routerd\n\
                  [Match]\n\
                  Name={}\n\n\
-                 [Link]\n\
-                 Unmanaged=yes\n",
+                 [Network]\n\
+                 DHCP=no\n\
+                 LinkLocalAddressing=no\n",
                 iface.name,
             );
-            let content = if iface.mtu.is_some() {
-                content.replace(
-                    "[Link]\nUnmanaged=yes\n",
-                    "[Network]\nDHCP=no\nLinkLocalAddressing=no\n",
-                )
-            } else {
-                content
-            };
             files.push(NetworkFile {
                 filename: format!("{}-{}.network", PREFIX, iface.name),
                 content,
@@ -716,13 +709,49 @@ mod tests {
         assert_eq!(files.len(), 2);
 
         let wan = files.iter().find(|f| f.filename.contains("eth0")).unwrap();
-        assert!(wan.content.contains("Unmanaged=yes"));
+        assert!(wan
+            .content
+            .contains("[Network]\nDHCP=no\nLinkLocalAddressing=no\n"));
+        assert!(!wan.content.contains("Unmanaged="));
+        assert!(!wan.content.contains("Address="));
 
         let ppp0 = files
             .iter()
             .find(|f| f.filename == "50-routerd-ppp0.network")
             .unwrap();
         assert!(ppp0.content.contains("Name=ppp0"));
+    }
+
+    #[test]
+    fn pppoe_parent_activation_is_independent_of_device_mtu() {
+        for mtu in [None, Some(1500), Some(1508)] {
+            let mut wan = make_wan(
+                InterfaceMethod::Pppoe,
+                Some(PppoeConfig::default()),
+                None,
+                None,
+            );
+            wan.mtu = mtu;
+            let config = Config {
+                interfaces: Interfaces { items: vec![wan] },
+                ..Config::default()
+            };
+            let files = render(&config).unwrap();
+            let parent = files
+                .iter()
+                .find(|f| f.filename == "50-routerd-eth0.network")
+                .unwrap();
+            assert!(parent
+                .content
+                .contains("[Network]\nDHCP=no\nLinkLocalAddressing=no\n"));
+            assert!(!parent.content.contains("Unmanaged="));
+            assert!(!parent.content.contains("Address="));
+            if let Some(mtu) = mtu {
+                assert!(parent.content.contains(&format!("MTUBytes={mtu}\n")));
+            } else {
+                assert!(!parent.content.contains("MTUBytes="));
+            }
+        }
     }
 
     #[test]
